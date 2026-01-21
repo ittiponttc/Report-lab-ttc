@@ -202,40 +202,20 @@ if uploaded:
         # -------------------------------------------------
         # BATCH MODE
         # -------------------------------------------------
-        st.subheader("📂 Batch Mode Summary")
+        data = df.iloc[start:start + 50, :]
+data = data.dropna(how="all", axis=0)
+data = data.dropna(how="all", axis=1)
 
-        summary = []
+ncol = data.shape[1]
 
-        for sheet in xls.sheet_names:
-            df = pd.read_excel(uploaded, sheet_name=sheet, header=None)
+if ncol < 2:
+    continue  # ข้าม sheet นี้ (ข้อมูลไม่พอ)
 
-            # detect table
-            start = None
-            for i in range(len(df)):
-                if "load" in " ".join([str(x).lower() for x in df.iloc[i].values]):
-                    start = i + 1
-                    break
-            if start is None:
-                continue
-
-            data = df.iloc[start:start + 50, :]
-            data = data.dropna(how="all")
-            data = data.iloc[:, :4]
-            data.columns = ["Disp", "Strain", "Load", "Stress"]
-
-            diameter = find_value_multi(df, ["diameter"])
-            height = find_value_multi(df, ["height"])
-            if diameter is None or height is None:
-                continue
-
-            area_cm2 = np.pi * (diameter / 10) ** 2 / 4
-            data["Stress_ksc"] = data["Load"] / area_cm2
-
-            qu = data["Stress_ksc"].max()
-            summary.append({
-                "Specimen": sheet,
-                "UCS (ksc)": qu
-            })
-
-        summary_df = pd.DataFrame(summary)
-        st.dataframe(summary_df)
+# ตั้งชื่อ column ตามจำนวนจริง
+if ncol == 2:
+    data.columns = ["Disp (mm)", "Load (kg)"]
+elif ncol == 3:
+    data.columns = ["Disp (mm)", "Load (kg)", "Extra"]
+else:
+    data = data.iloc[:, :4]
+    data.columns = ["Disp (mm)", "Strain_raw", "Load (kg)", "Stress_raw"]
