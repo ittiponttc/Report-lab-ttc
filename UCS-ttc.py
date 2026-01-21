@@ -8,7 +8,7 @@ from io import BytesIO
 # =====================================================
 # Page setup
 # =====================================================
-st.set_page_config(page_title="UCS Lab Report", layout="wide")
+st.set_page_config(page_title="UCS Lab System", layout="wide")
 st.title("🧪 Unconfined Compression Test (UCS) – Lab System")
 
 # =====================================================
@@ -37,6 +37,47 @@ def warn(label, value, teaching):
             st.info(f"👉 ตรวจสอบหัวข้อ `{label}` ในไฟล์ Excel")
 
 
+def detect_data_table(df):
+    """
+    หาแถวเริ่มต้นของตารางทดสอบจากคำว่า Load
+    """
+    for i in range(len(df)):
+        row_text = " ".join([str(x).lower() for x in df.iloc[i].values])
+        if "load" in row_text:
+            return i + 1
+    return None
+
+
+def prepare_data(df, start_row):
+    """
+    เตรียมตารางข้อมูลแบบ error-proof
+    """
+    data = df.iloc[start_row:start_row + 60, :]
+    data = data.dropna(how="all", axis=0)
+    data = data.dropna(how="all", axis=1)
+
+    ncol = data.shape[1]
+
+    if ncol < 2:
+        return None
+
+    # ตั้งชื่อ column ตามจำนวนจริง
+    if ncol == 2:
+        data.columns = ["Disp (mm)", "Load (kg)"]
+    elif ncol == 3:
+        data.columns = ["Disp (mm)", "Load (kg)", "Extra"]
+    else:
+        data = data.iloc[:, :4]
+        data.columns = [
+            "Disp (mm)",
+            "Strain_raw",
+            "Load (kg)",
+            "Stress_raw"
+        ]
+
+    return data
+
+
 # =====================================================
 # UI controls
 # =====================================================
@@ -51,10 +92,10 @@ teaching_mode = st.checkbox("🧑‍🎓 Teaching mode (แนะนำเด็
 if uploaded:
     xls = pd.ExcelFile(uploaded)
 
+    # =================================================
+    # SINGLE SPECIMEN MODE
+    # =================================================
     if not batch_mode:
-        # -------------------------------------------------
-        # SINGLE SPECIMEN MODE
-        # -------------------------------------------------
         sheet = st.selectbox("📑 Select worksheet", xls.sheet_names)
         df = pd.read_excel(uploaded, sheet_name=sheet, header=None)
 
@@ -67,17 +108,17 @@ if uploaded:
         height = find_value_multi(df, ["height"])
         depth = find_value_multi(df, ["depth"])
 
-        # fallback (MHT standard)
+        # fallback ตามฟอร์ม MHT
         if project is None:
-            project = df.iloc[6, 3]
+            project = df.iloc[6, 3] if df.shape[0] > 6 else None
         if cement is None:
-            cement = df.iloc[15, 5]
+            cement = df.iloc[15, 5] if df.shape[0] > 15 else None
         if diameter is None:
-            diameter = df.iloc[16, 5]
+            diameter = df.iloc[16, 5] if df.shape[0] > 16 else None
         if height is None:
-            height = df.iloc[17, 5]
+            height = df.iloc[17, 5] if df.shape[0] > 17 else None
         if depth is None:
-            depth = df.iloc[18, 5]
+            depth = df.iloc[18, 5] if df.shape[0] > 18 else None
 
         info = {
             "Project": project,
@@ -93,64 +134,67 @@ if uploaded:
             if v is not None:
                 st.write(f"**{k}:** {v}")
 
-        # -------------------------------------------------
-        # Detect test data table
-        # -------------------------------------------------
-        data_start = None
-        for i in range(len(df)):
-            row_text = " ".join([str(x).lower() for x in df.iloc[i].values])
-            if "load" in row_text:
-                data_start = i + 1
-                break
-
-        if data_start is None:
+        # =================================================
+        # Detect and prepare test data
+        # =================================================
+        start_row = detect_data_table(df)
+        if start_row is None:
             st.error("❌ Cannot detect Load data table")
             st.stop()
 
-        data = df.iloc[data_start:data_start + 50, :]
-        data = data.dropna(how="all")
-        data = data.dropna(axis=1, how="all")
-        data = data.iloc[:, :4]
-        data.columns = [
-            "Vertical displacement (mm)",
-            "Strain_raw",
-            "Load (kg)",
-            "Stress_raw"
-        ]
+        data = prepare_data(df, start_row)
+        if data is None:
+            st.error("❌ Data table not valid")
+            st.stop()
 
         st.subheader("📊 Raw Test Data")
         st.dataframe(data)
 
-        # -------------------------------------------------
+        # =================================================
         # Engineering calculation
-        # -------------------------------------------------
+        # =================================================
+        if diameter is None or height is None:
+            st.error("❌ Diameter or Height missing")
+            st.stop()
+
         area_cm2 = np.pi * (diameter / 10) ** 2 / 4
-        data["Axial Strain (%)"] = data["Vertical displacement (mm)"] / height * 100
+
+        data["Axial Strain (%)"] = data["Disp (mm)"] / height * 100
         data["Axial Stress (ksc)"] = data["Load (kg)"] / area_cm2
 
+        # UCS & Peak
         qu = data["Axial Stress (ksc)"].max()
         idx_peak = data["Axial Stress (ksc)"].idxmax()
         strain_peak = data.loc[idx_peak, "Axial Strain (%)"]
 
+        # E50
         q50 = 0.5 * qu
-        eps50 = np.interp(q50,
-                          data["Axial Stress (ksc)"],
-                          data["Axial Strain (%)"])
+        eps50 = np.interp(
+            q50,
+            data["Axial Stress (ksc)"],
+            data["Axial Strain (%)"]
+        )
         E50 = q50 / eps50
 
         st.subheader("🔢 Key Results")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("UCS (qu)", f"{qu:.2f} ksc")
-        col2.metric("Strain at Peak", f"{strain_peak:.2f} %")
-        col3.metric("E₅₀", f"{E50:.2f} ksc/%")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("UCS (qu)", f"{qu:.2f} ksc")
+        c2.metric("Strain at Peak", f"{strain_peak:.2f} %")
+        c3.metric("E₅₀", f"{E50:.2f} ksc/%")
 
-        # -------------------------------------------------
+        # =================================================
         # Plot
-        # -------------------------------------------------
+        # =================================================
         fig, ax = plt.subplots(figsize=(6, 5))
-        ax.plot(data["Axial Strain (%)"], data["Axial Stress (ksc)"], marker="o")
+        ax.plot(
+            data["Axial Strain (%)"],
+            data["Axial Stress (ksc)"],
+            marker="o",
+            label="Stress–Strain"
+        )
         ax.plot(strain_peak, qu, "ro", label="Peak (UCS)")
         ax.plot([0, eps50], [0, q50], "--", label="E50 secant")
+
         ax.set_xlabel("Axial Strain (%)")
         ax.set_ylabel("Axial Stress (ksc)")
         ax.grid(True)
@@ -159,9 +203,9 @@ if uploaded:
         st.subheader("📈 Stress–Strain Curve")
         st.pyplot(fig)
 
-        # -------------------------------------------------
+        # =================================================
         # Export Excel
-        # -------------------------------------------------
+        # =================================================
         excel_buf = BytesIO()
         with pd.ExcelWriter(excel_buf, engine="xlsxwriter") as writer:
             data.to_excel(writer, index=False, sheet_name="UCS_Result")
@@ -172,9 +216,9 @@ if uploaded:
             "UCS_Result.xlsx"
         )
 
-        # -------------------------------------------------
+        # =================================================
         # Export Word (Thai–English)
-        # -------------------------------------------------
+        # =================================================
         doc = Document()
         doc.add_heading("รายงานผลการทดสอบแรงอัดไม่ถูกควบคุม", 1)
         doc.add_paragraph(f"กำลังรับแรงอัดสูงสุด (UCS, qu) = {qu:.2f} ksc")
@@ -198,24 +242,46 @@ if uploaded:
             "UCS_Report.docx"
         )
 
+    # =================================================
+    # BATCH MODE
+    # =================================================
     else:
-        # -------------------------------------------------
-        # BATCH MODE
-        # -------------------------------------------------
-        data = df.iloc[start:start + 50, :]
-data = data.dropna(how="all", axis=0)
-data = data.dropna(how="all", axis=1)
+        st.subheader("📂 Batch Mode Summary")
 
-ncol = data.shape[1]
+        summary = []
 
-if ncol < 2:
-    continue  # ข้าม sheet นี้ (ข้อมูลไม่พอ)
+        for sheet in xls.sheet_names:
+            df = pd.read_excel(uploaded, sheet_name=sheet, header=None)
 
-# ตั้งชื่อ column ตามจำนวนจริง
-if ncol == 2:
-    data.columns = ["Disp (mm)", "Load (kg)"]
-elif ncol == 3:
-    data.columns = ["Disp (mm)", "Load (kg)", "Extra"]
-else:
-    data = data.iloc[:, :4]
-    data.columns = ["Disp (mm)", "Strain_raw", "Load (kg)", "Stress_raw"]
+            start_row = detect_data_table(df)
+            if start_row is None:
+                if teaching_mode:
+                    st.warning(f"⚠ {sheet}: ไม่พบตาราง Load")
+                continue
+
+            data = prepare_data(df, start_row)
+            if data is None or "Load (kg)" not in data.columns:
+                if teaching_mode:
+                    st.warning(f"⚠ {sheet}: ตารางข้อมูลไม่สมบูรณ์")
+                continue
+
+            diameter = find_value_multi(df, ["diameter"])
+            height = find_value_multi(df, ["height"])
+
+            if diameter is None or height is None:
+                if teaching_mode:
+                    st.warning(f"⚠ {sheet}: ไม่มี Diameter/Height")
+                continue
+
+            area_cm2 = np.pi * (diameter / 10) ** 2 / 4
+            data["Axial Stress (ksc)"] = data["Load (kg)"] / area_cm2
+
+            qu = data["Axial Stress (ksc)"].max()
+
+            summary.append({
+                "Specimen (Sheet)": sheet,
+                "UCS (ksc)": round(qu, 2)
+            })
+
+        summary_df = pd.DataFrame(summary)
+        st.dataframe(summary_df)
