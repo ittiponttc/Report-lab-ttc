@@ -5,116 +5,129 @@ import matplotlib.pyplot as plt
 from docx import Document
 from io import BytesIO
 
-st.set_page_config(page_title="UCS Report (ASTM D2166)", layout="wide")
-st.title("📊 Unconfined Compression Test Report")
+st.set_page_config("UCS Report", layout="wide")
+st.title("🧪 UCS / Axial Compression Test Report")
 
-uploaded = st.file_uploader("Upload MHT.24-68.xlsx", type=["xlsx"])
+uploaded = st.file_uploader("Upload Excel file", type=["xlsx"])
+
+def find_value(df, keyword, col_offset=1, row_range=5):
+    for i in range(len(df)):
+        for j in range(len(df.columns)):
+            cell = df.iloc[i, j]
+            if isinstance(cell, str) and keyword.lower() in cell.lower():
+                for r in range(row_range):
+                    try:
+                        val = df.iloc[i + r, j + col_offset]
+                        if pd.notna(val):
+                            return val
+                    except:
+                        pass
+    return None
 
 if uploaded:
-    sheet = "Ver.2"
-    df_raw = pd.read_excel(uploaded, sheet_name=sheet, header=None)
+    xls = pd.ExcelFile(uploaded)
+    sheet = st.selectbox("📑 Select worksheet", xls.sheet_names)
+    df = pd.read_excel(uploaded, sheet_name=sheet, header=None)
 
-    # ===============================
-    # Read general information
-    # ===============================
-    project = df_raw.iloc[6, 3]
-    location = df_raw.iloc[7, 3]
-    rate = df_raw.iloc[8, 3]
+    st.subheader("📌 General Information (Auto-detected)")
 
-    cement = df_raw.iloc[15, 5]
-    diameter = df_raw.iloc[16, 5]     # mm
-    height = df_raw.iloc[17, 5]       # mm
-    depth = df_raw.iloc[18, 5]        # m
+    project = find_value(df, "project")
+    location = find_value(df, "location")
+    cement = find_value(df, "cement")
+    diameter = find_value(df, "diameter")
+    height = find_value(df, "height")
+    depth = find_value(df, "depth")
 
-    st.subheader("📌 Project Information")
-    st.write(f"**Project:** {project}")
-    st.write(f"**Location:** {location}")
-    st.write(f"**Shearing Rate:** {rate}")
-    st.write(f"**Cement Content:** {cement} %")
-    st.write(f"**Depth:** {depth} m")
+    info = {
+        "Project": project,
+        "Location": location,
+        "Cement (%)": cement,
+        "Diameter (mm)": diameter,
+        "Height (mm)": height,
+        "Depth (m)": depth,
+    }
 
-    # ===============================
-    # Read test data
-    # ===============================
-    data = df_raw.iloc[22:52, 1:5]
-    data.columns = [
-        "Vertical displacement (mm)",
-        "Raw strain",
-        "Load (kg)",
-        "Raw stress"
-    ]
-    data = data.dropna()
+    for k, v in info.items():
+        if v is None:
+            st.warning(f"⚠ {k} not found – please check Excel")
+        else:
+            st.write(f"**{k}:** {v}")
 
-    # ===============================
-    # Engineering calculation
-    # ===============================
-    area_cm2 = np.pi * (diameter / 10) ** 2 / 4
+    # ===========================
+    # Detect data table automatically
+    # ===========================
+    st.subheader("📊 Test Data")
 
-    data["Axial Strain (%)"] = (
-        data["Vertical displacement (mm)"] / height * 100
-    )
+    data_start = None
+    for i in range(len(df)):
+        if "load" in str(df.iloc[i].values).lower():
+            data_start = i + 1
+            break
 
-    data["Axial Stress (ksc)"] = (
-        data["Load (kg)"] / area_cm2
-    )
+    if data_start is None:
+        st.error("❌ Cannot detect data table (Load / Displacement)")
+        st.stop()
 
-    st.subheader("📐 Calculated Results")
+    data = df.iloc[data_start:data_start+50, :]
+    data = data.dropna(how="all", axis=1)
+    data = data.dropna(how="all", axis=0)
+
+    data.columns = ["Disp (mm)", "Strain_raw", "Load (kg)", "Stress_raw"][:len(data.columns)]
+
     st.dataframe(data)
 
-    # ===============================
-    # Plot
-    # ===============================
-    fig, ax = plt.subplots(figsize=(6,5))
-    ax.plot(
-        data["Axial Strain (%)"],
-        data["Axial Stress (ksc)"],
-        marker="o"
-    )
-    ax.set_xlabel("Axial Strain (%)")
-    ax.set_ylabel("Axial Stress (ksc)")
-    ax.grid(True)
+    # ===========================
+    # Calculation
+    # ===========================
+    if diameter and height:
+        area_cm2 = np.pi * (diameter/10)**2 / 4
+        data["Axial Strain (%)"] = data["Disp (mm)"] / height * 100
+        data["Axial Stress (ksc)"] = data["Load (kg)"] / area_cm2
 
-    st.subheader("📈 Stress–Strain Curve")
-    st.pyplot(fig)
+        # ===========================
+        # Plot
+        # ===========================
+        fig, ax = plt.subplots()
+        ax.plot(data["Axial Strain (%)"], data["Axial Stress (ksc)"], marker="o")
+        ax.set_xlabel("Axial Strain (%)")
+        ax.set_ylabel("Axial Stress (ksc)")
+        ax.grid(True)
 
-    # ===============================
-    # Export Excel
-    # ===============================
-    excel_buf = BytesIO()
-    with pd.ExcelWriter(excel_buf, engine="xlsxwriter") as writer:
-        data.to_excel(writer, index=False, sheet_name="UCS_Result")
+        st.subheader("📈 Stress–Strain Curve")
+        st.pyplot(fig)
 
-    st.download_button(
-        "⬇️ Download Excel",
-        excel_buf.getvalue(),
-        "UCS_Result.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        # ===========================
+        # Export Excel
+        # ===========================
+        excel_buf = BytesIO()
+        with pd.ExcelWriter(excel_buf, engine="xlsxwriter") as writer:
+            data.to_excel(writer, index=False, sheet_name="Result")
 
-    # ===============================
-    # Export Word
-    # ===============================
-    doc = Document()
-    doc.add_heading("Unconfined Compression Test Report", 1)
+        st.download_button(
+            "⬇ Download Excel",
+            excel_buf.getvalue(),
+            "UCS_Result.xlsx"
+        )
 
-    doc.add_paragraph(f"Project: {project}")
-    doc.add_paragraph(f"Location: {location}")
-    doc.add_paragraph(f"Cement content: {cement} %")
-    doc.add_paragraph(f"Depth: {depth} m")
-    doc.add_paragraph(f"Diameter: {diameter} mm")
-    doc.add_paragraph(f"Height: {height} mm")
+        # ===========================
+        # Export Word
+        # ===========================
+        doc = Document()
+        doc.add_heading("Unconfined Compression Test Report", 1)
 
-    img = BytesIO()
-    fig.savefig(img, dpi=300)
-    img.seek(0)
-    doc.add_picture(img, width=4000000)
+        for k, v in info.items():
+            doc.add_paragraph(f"{k}: {v}")
 
-    word_buf = BytesIO()
-    doc.save(word_buf)
+        img = BytesIO()
+        fig.savefig(img, dpi=300)
+        img.seek(0)
+        doc.add_picture(img, width=4000000)
 
-    st.download_button(
-        "⬇️ Download Word Report",
-        word_buf.getvalue(),
-        "UCS_Report.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    )
+        word_buf = BytesIO()
+        doc.save(word_buf)
+
+        st.download_button(
+            "⬇ Download Word",
+            word_buf.getvalue(),
+            "UCS_Report.docx"
+        )
