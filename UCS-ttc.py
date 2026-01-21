@@ -280,10 +280,15 @@ if uploaded_file is not None:
             
             with download_col1:
                 # Excel Export
-                def create_excel_report():
-                    wb = Workbook()
-                    ws = wb.active
-                    ws.title = "UCS Test Report"
+        from openpyxl.utils import get_column_letter
+
+       # Adjust column widths
+       for ws_sheet in [ws, ws2]:
+       for column_cells in ws_sheet.columns:
+        length = max(len(str(cell.value) if cell.value else "") for cell in column_cells)
+        col_letter = get_column_letter(column_cells[0].column)
+        ws_sheet.column_dimensions[col_letter].width = max(length + 2, 12)
+
                     
                     # Styles
                     header_font = Font(bold=True, size=12)
