@@ -6,7 +6,7 @@ st.title("Low Carbon Concrete – Full Score Simulator")
 
 # Emission factor (ตามกติกา)
 EF = {
-    "Cement": 0.912,
+    "Cement": 0.81,
     "GGBFS": 0.0416,
     "Gypsum": 0.002536,
     "Limestone": 0.01577,
