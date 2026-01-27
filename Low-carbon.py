@@ -8,7 +8,8 @@ st.title("Low Carbon Concrete – Full Score Simulator")
 EF = {
     "Cement": 0.912,
     "GGBFS": 0.0416,
-    "Limestone": 0.03,
+    "Gypsum": 0.002536,
+    "Limestone": 0.01577,
     "Fly ash": 0.004,
     "Aggregates": 0.00747,
     "Water": 0.000541,
