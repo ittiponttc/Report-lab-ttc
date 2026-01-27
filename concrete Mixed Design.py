@@ -1,8 +1,19 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 import json
 from io import BytesIO
+
+# ตั้งค่าฟอนต์ไทยสำหรับ matplotlib
+try:
+    import matplotlib.font_manager as fm
+    # ใช้ฟอนต์ที่รองรับภาษาไทย
+    plt.rcParams['font.family'] = 'DejaVu Sans'
+    # ตั้งค่าให้แสดงเครื่องหมายลบได้ถูกต้อง
+    plt.rcParams['axes.unicode_minus'] = False
+except:
+    pass
 
 # =========================================================
 # Functions
@@ -78,663 +89,274 @@ def moisture_correction(weight_ssd, mc, absorption):
 def create_word_report(input_data, mix_result, moisture_result):
     """
     สร้างรายงาน Word แบบละเอียดเป็นขั้นเป็นตอน
-    ใช้ Node.js + docx-js
+    ใช้ python-docx
     """
-    import subprocess
-    import os
+    try:
+        from docx import Document
+        from docx.shared import Pt, RGBColor, Inches
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml.ns import qn
+    except ImportError:
+        import subprocess
+        subprocess.run(['pip', 'install', 'python-docx', '--break-system-packages'], 
+                      capture_output=True)
+        from docx import Document
+        from docx.shared import Pt, RGBColor, Inches
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml.ns import qn
     
-    # สร้างไฟล์ JS สำหรับสร้าง Word
-    js_code = f"""
-const {{ Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
-        HeadingLevel, AlignmentType, WidthType, BorderStyle, ShadingType }} = require('docx');
-const fs = require('fs');
-
-// ข้อมูลจาก Python
-const input = {json.dumps(input_data, ensure_ascii=False)};
-const mix = {json.dumps(mix_result, ensure_ascii=False)};
-const moisture = {json.dumps(moisture_result, ensure_ascii=False)};
-
-// Border สำหรับตาราง
-const border = {{ style: BorderStyle.SINGLE, size: 1, color: "000000" }};
-const borders = {{ top: border, bottom: border, left: border, right: border }};
-
-const doc = new Document({{
-  styles: {{
-    default: {{
-      document: {{
-        run: {{ font: "TH SarabunPSK", size: 30 }}  // 15pt
-      }}
-    }},
-    paragraphStyles: [
-      {{
-        id: "Heading1",
-        name: "Heading 1",
-        basedOn: "Normal",
-        next: "Normal",
-        quickFormat: true,
-        run: {{ size: 36, bold: true, font: "TH SarabunPSK" }},
-        paragraph: {{ 
-          spacing: {{ before: 240, after: 120 }},
-          alignment: AlignmentType.CENTER,
-          outlineLevel: 0
-        }}
-      }},
-      {{
-        id: "Heading2",
-        name: "Heading 2",
-        basedOn: "Normal",
-        next: "Normal",
-        quickFormat: true,
-        run: {{ size: 32, bold: true, font: "TH SarabunPSK" }},
-        paragraph: {{ 
-          spacing: {{ before: 180, after: 120 }},
-          outlineLevel: 1
-        }}
-      }}
+    # สร้างเอกสาร
+    doc = Document()
+    
+    # ฟังก์ชันตั้งค่าฟอนต์ไทย
+    def set_thai_font(run, size=15, bold=False):
+        run.font.name = 'TH SarabunPSK'
+        run.font.size = Pt(size)
+        run.font.bold = bold
+        r = run._element
+        r.rPr.rFonts.set(qn('w:eastAsia'), 'TH SarabunPSK')
+    
+    # หัวเรื่อง
+    title = doc.add_heading('รายงานการออกแบบส่วนผสมคอนกรีต', 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for run in title.runs:
+        set_thai_font(run, size=18, bold=True)
+    
+    subtitle = doc.add_paragraph('ตามมาตรฐาน ACI 211.1')
+    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for run in subtitle.runs:
+        set_thai_font(run, size=14)
+    
+    # ส่วนที่ 1: ข้อมูลนำเข้า
+    doc.add_heading('1. ข้อมูลนำเข้าในการออกแบบ', 1)
+    
+    table1 = doc.add_table(rows=9, cols=2)
+    table1.style = 'Light Grid Accent 1'
+    
+    # Header
+    hdr_cells = table1.rows[0].cells
+    hdr_cells[0].text = 'รายการ'
+    hdr_cells[1].text = 'ค่าที่ใช้'
+    for cell in hdr_cells:
+        for paragraph in cell.paragraphs:
+            for run in paragraph.runs:
+                set_thai_font(run, bold=True)
+    
+    # Data
+    data1 = [
+        ('อัตราส่วน น้ำ/ปูนซีเมนต์ (w/c)', f"{input_data['wc_ratio']}"),
+        ('ขนาดมวลรวมหยาบสูงสุด (mm)', f"{input_data['max_agg_mm']}"),
+        ('ค่าความถ่วงจำเพาะของปูนซีเมนต์', f"{input_data['sg_cement']:.2f}"),
+        ('ค่าความถ่วงจำเพาะของมวลรวมละเอียด', f"{input_data['sg_fine']:.2f}"),
+        ('ค่าความถ่วงจำเพาะของมวลรวมหยาบ', f"{input_data['sg_coarse']:.2f}"),
+        ('ปริมาณอากาศ (%)', f"{input_data['air_content']*100:.1f}"),
+        ('น้ำหนักหน่วยของมวลรวมหยาบ (kg/m³)', f"{input_data['unit_weight_coarse']:.0f}")
     ]
-  }},
-  
-  sections: [{{
-    properties: {{
-      page: {{
-        size: {{ width: 11906, height: 16838 }},  // A4
-        margin: {{ top: 1440, right: 1440, bottom: 1440, left: 1440 }}
-      }}
-    }},
     
-    children: [
-      // หัวเรื่อง
-      new Paragraph({{
-        heading: HeadingLevel.HEADING_1,
-        children: [new TextRun("รายงานการออกแบบส่วนผสมคอนกรีต")]
-      }}),
-      
-      new Paragraph({{
-        alignment: AlignmentType.CENTER,
-        spacing: {{ after: 240 }},
-        children: [new TextRun({{
-          text: "ตามมาตรฐาน ACI 211.1",
-          size: 28,
-          italics: true
-        }})]
-      }}),
-      
-      // ส่วนที่ 1: ข้อมูลนำเข้า
-      new Paragraph({{
-        heading: HeadingLevel.HEADING_2,
-        children: [new TextRun("1. ข้อมูลนำเข้าในการออกแบบ")]
-      }}),
-      
-      new Table({{
-        width: {{ size: 100, type: WidthType.PERCENTAGE }},
-        columnWidths: [4680, 4680],
-        rows: [
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                shading: {{ fill: "D9D9D9", type: ShadingType.CLEAR }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{
-                  children: [new TextRun({{ text: "รายการ", bold: true }})]
-                }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                shading: {{ fill: "D9D9D9", type: ShadingType.CLEAR }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{
-                  children: [new TextRun({{ text: "ค่าที่ใช้", bold: true }})]
-                }})]
-              }})]
-          }}),
-          
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun("อัตราส่วน น้ำ/ปูนซีเมนต์ (w/c)")] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun(input.wc_ratio.toString())] }})]
-              }})]
-          }}),
-          
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun("ขนาดมวลรวมหยาบสูงสุด (mm)")] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun(input.max_agg_mm.toString())] }})]
-              }})]
-          }}),
-          
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun("ค่าความถ่วงจำเพาะของปูนซีเมนต์")] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun(input.sg_cement.toFixed(2))] }})]
-              }})]
-          }}),
-          
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun("ค่าความถ่วงจำเพาะของมวลรวมละเอียด")] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun(input.sg_fine.toFixed(2))] }})]
-              }})]
-          }}),
-          
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun("ค่าความถ่วงจำเพาะของมวลรวมหยาบ")] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun(input.sg_coarse.toFixed(2))] }})]
-              }})]
-          }}),
-          
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun("ปริมาณอากาศ (%)")] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun((input.air_content * 100).toFixed(1))] }})]
-              }})]
-          }}),
-          
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun("น้ำหนักหน่วยของมวลรวมหยาบ (kg/m³)")] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun(input.unit_weight_coarse.toFixed(0))] }})]
-              }})]
-          }})]
-      }}),
-      
-      // ส่วนที่ 2: ขั้นตอนการคำนวณ
-      new Paragraph({{
-        heading: HeadingLevel.HEADING_2,
-        spacing: {{ before: 360, after: 120 }},
-        children: [new TextRun("2. ขั้นตอนการคำนวณตามวิธี ACI 211.1")]
-      }}),
-      
-      new Paragraph({{
-        spacing: {{ after: 120 }},
-        children: [new TextRun({{
-          text: "ขั้นตอนที่ 1: กำหนดปริมาณน้ำและปริมาณมวลรวมหยาบ",
-          bold: true
-        }})]
-      }}),
-      
-      new Paragraph({{
-        children: [new TextRun(
-          `จากตาราง ACI สำหรับขนาดมวลรวมหยาบสูงสุด ${{input.max_agg_mm}} mm:\\n` +
-          `  - ปริมาณน้ำ = ${{mix.Water.toFixed(1)}} kg/m³\\n` +
-          `  - สัดส่วนปริมาตรมวลรวมหยาบ = ${{input.max_agg_mm === 20 ? '0.62' : input.max_agg_mm === 25 ? '0.64' : '0.68'}}`
-        )]
-      }}),
-      
-      new Paragraph({{
-        spacing: {{ before: 120, after: 120 }},
-        children: [new TextRun({{
-          text: "ขั้นตอนที่ 2: คำนวณปริมาณปูนซีเมนต์",
-          bold: true
-        }})]
-      }}),
-      
-      new Paragraph({{
-        children: [new TextRun(
-          `ปริมาณปูนซีเมนต์ = น้ำ / (w/c) = ${{mix.Water.toFixed(1)}} / ${{input.wc_ratio}} = ${{mix.Cement.toFixed(1)}} kg/m³`
-        )]
-      }}),
-      
-      new Paragraph({{
-        spacing: {{ before: 120, after: 120 }},
-        children: [new TextRun({{
-          text: "ขั้นตอนที่ 3: คำนวณน้ำหนักมวลรวมหยาบ",
-          bold: true
-        }})]
-      }}),
-      
-      new Paragraph({{
-        children: [new TextRun(
-          `น้ำหนักมวลรวมหยาบ = สัดส่วนปริมาตร × น้ำหนักหน่วย\\n` +
-          `  = ${{input.max_agg_mm === 20 ? '0.62' : input.max_agg_mm === 25 ? '0.64' : '0.68'}} × ${{input.unit_weight_coarse}} = ${{mix["Coarse Aggregate"].toFixed(1)}} kg/m³`
-        )]
-      }}),
-      
-      new Paragraph({{
-        spacing: {{ before: 120, after: 120 }},
-        children: [new TextRun({{
-          text: "ขั้นตอนที่ 4: คำนวณปริมาตรสัมบูรณ์ของแต่ละวัสดุ",
-          bold: true
-        }})]
-      }}),
-      
-      new Paragraph({{
-        children: [new TextRun(
-          `ปริมาตรน้ำ = ${{mix.Water.toFixed(1)}} / 1000 = ${{mix.vol_water.toFixed(4)}} m³\\n` +
-          `ปริมาตรปูนซีเมนต์ = ${{mix.Cement.toFixed(1)}} / (${{input.sg_cement}} × 1000) = ${{mix.vol_cement.toFixed(4)}} m³\\n` +
-          `ปริมาตรมวลรวมหยาบ = ${{mix["Coarse Aggregate"].toFixed(1)}} / (${{input.sg_coarse}} × 1000) = ${{mix.vol_coarse.toFixed(4)}} m³\\n` +
-          `ปริมาตรอากาศ = ${{(input.air_content * 100).toFixed(1)}}% = ${{mix.vol_air.toFixed(4)}} m³`
-        )]
-      }}),
-      
-      new Paragraph({{
-        spacing: {{ before: 120, after: 120 }},
-        children: [new TextRun({{
-          text: "ขั้นตอนที่ 5: คำนวณปริมาตรมวลรวมละเอียด",
-          bold: true
-        }})]
-      }}),
-      
-      new Paragraph({{
-        children: [new TextRun(
-          `ปริมาตรมวลรวมละเอียด = 1 - (น้ำ + ปูนซีเมนต์ + มวลรวมหยาบ + อากาศ)\\n` +
-          `  = 1 - (${{mix.vol_water.toFixed(4)}} + ${{mix.vol_cement.toFixed(4)}} + ${{mix.vol_coarse.toFixed(4)}} + ${{mix.vol_air.toFixed(4)}})\\n` +
-          `  = ${{mix.vol_fine.toFixed(4)}} m³`
-        )]
-      }}),
-      
-      new Paragraph({{
-        spacing: {{ before: 120, after: 120 }},
-        children: [new TextRun({{
-          text: "ขั้นตอนที่ 6: คำนวณน้ำหนักมวลรวมละเอียด",
-          bold: true
-        }})]
-      }}),
-      
-      new Paragraph({{
-        children: [new TextRun(
-          `น้ำหนักมวลรวมละเอียด = ปริมาตร × ความถ่วงจำเพาะ × 1000\\n` +
-          `  = ${{mix.vol_fine.toFixed(4)}} × ${{input.sg_fine}} × 1000\\n` +
-          `  = ${{mix["Fine Aggregate"].toFixed(1)}} kg/m³`
-        )]
-      }}),
-      
-      // ส่วนที่ 3: ผลลัพธ์ (SSD)
-      new Paragraph({{
-        heading: HeadingLevel.HEADING_2,
-        spacing: {{ before: 360, after: 120 }},
-        children: [new TextRun("3. ผลการออกแบบส่วนผสมคอนกรีต (สภาพ SSD)")]
-      }}),
-      
-      new Table({{
-        width: {{ size: 100, type: WidthType.PERCENTAGE }},
-        columnWidths: [4680, 4680],
-        rows: [
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                shading: {{ fill: "D9D9D9", type: ShadingType.CLEAR }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{
-                  children: [new TextRun({{ text: "วัสดุ", bold: true }})]
-                }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                shading: {{ fill: "D9D9D9", type: ShadingType.CLEAR }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{
-                  children: [new TextRun({{ text: "ปริมาณ (kg/m³)", bold: true }})]
-                }})]
-              }})]
-          }}),
-          
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun("น้ำ")] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun(mix.Water.toFixed(1))] }})]
-              }})]
-          }}),
-          
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun("ปูนซีเมนต์")] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun(mix.Cement.toFixed(1))] }})]
-              }})]
-          }}),
-          
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun("มวลรวมละเอียด")] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun(mix["Fine Aggregate"].toFixed(1))] }})]
-              }})]
-          }}),
-          
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun("มวลรวมหยาบ")] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 4680, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun(mix["Coarse Aggregate"].toFixed(1))] }})]
-              }})]
-          }})]
-      }}),
-      
-      // ส่วนที่ 4: การปรับแก้ความชื้น
-      new Paragraph({{
-        heading: HeadingLevel.HEADING_2,
-        spacing: {{ before: 360, after: 120 }},
-        children: [new TextRun("4. การปรับแก้เนื่องจากความชื้นในมวลรวม")]
-      }}),
-      
-      new Paragraph({{
-        spacing: {{ after: 120 }},
-        children: [new TextRun({{
-          text: "4.1 การคำนวณสำหรับมวลรวมละเอียด",
-          bold: true
-        }})]
-      }}),
-      
-      new Paragraph({{
-        children: [new TextRun(
-          `ความชื้น (MC) = ${{input.mc_fine.toFixed(1)}}%\\n` +
-          `การดูดซับน้ำ (Absorption) = ${{input.abs_fine.toFixed(1)}}%\\n` +
-          `การเปลี่ยนแปลงน้ำหนักน้ำ = น้ำหนัก SSD × (MC - Absorption) / 100\\n` +
-          `  = ${{mix["Fine Aggregate"].toFixed(1)}} × (${{input.mc_fine.toFixed(1)}} - ${{input.abs_fine.toFixed(1)}}) / 100\\n` +
-          `  = ${{moisture.dw_fine.toFixed(1)}} kg/m³\\n\\n` +
-          `น้ำหนักมวลรวมละเอียดสำหรับผสม = น้ำหนัก SSD × (1 + MC/100)\\n` +
-          `  = ${{mix["Fine Aggregate"].toFixed(1)}} × (1 + ${{input.mc_fine.toFixed(1)}}/100)\\n` +
-          `  = ${{moisture.batch_fine.toFixed(1)}} kg/m³`
-        )]
-      }}),
-      
-      new Paragraph({{
-        spacing: {{ before: 120, after: 120 }},
-        children: [new TextRun({{
-          text: "4.2 การคำนวณสำหรับมวลรวมหยาบ",
-          bold: true
-        }})]
-      }}),
-      
-      new Paragraph({{
-        children: [new TextRun(
-          `ความชื้น (MC) = ${{input.mc_coarse.toFixed(1)}}%\\n` +
-          `การดูดซับน้ำ (Absorption) = ${{input.abs_coarse.toFixed(1)}}%\\n` +
-          `การเปลี่ยนแปลงน้ำหนักน้ำ = น้ำหนัก SSD × (MC - Absorption) / 100\\n` +
-          `  = ${{mix["Coarse Aggregate"].toFixed(1)}} × (${{input.mc_coarse.toFixed(1)}} - ${{input.abs_coarse.toFixed(1)}}) / 100\\n` +
-          `  = ${{moisture.dw_coarse.toFixed(1)}} kg/m³\\n\\n` +
-          `น้ำหนักมวลรวมหยาบสำหรับผสม = น้ำหนัก SSD × (1 + MC/100)\\n` +
-          `  = ${{mix["Coarse Aggregate"].toFixed(1)}} × (1 + ${{input.mc_coarse.toFixed(1)}}/100)\\n` +
-          `  = ${{moisture.batch_coarse.toFixed(1)}} kg/m³`
-        )]
-      }}),
-      
-      new Paragraph({{
-        spacing: {{ before: 120, after: 120 }},
-        children: [new TextRun({{
-          text: "4.3 การปรับแก้ปริมาณน้ำผสม",
-          bold: true
-        }})]
-      }}),
-      
-      new Paragraph({{
-        children: [new TextRun(
-          `น้ำที่มาจากมวลรวมทั้งหมด = ${{moisture.dw_fine.toFixed(1)}} + ${{moisture.dw_coarse.toFixed(1)}} = ${{moisture.total_delta_water.toFixed(1)}} kg/m³\\n` +
-          `ปริมาณน้ำผสมที่ต้องเติม = ${{mix.Water.toFixed(1)}} - ${{moisture.total_delta_water.toFixed(1)}} = ${{moisture.corrected_water.toFixed(1)}} kg/m³`
-        )]
-      }}),
-      
-      // ส่วนที่ 5: สรุปส่วนผสมสำหรับใช้งาน
-      new Paragraph({{
-        heading: HeadingLevel.HEADING_2,
-        spacing: {{ before: 360, after: 120 }},
-        children: [new TextRun("5. สรุปส่วนผสมคอนกรีตสำหรับการผสม")]
-      }}),
-      
-      new Table({{
-        width: {{ size: 100, type: WidthType.PERCENTAGE }},
-        columnWidths: [3120, 3120, 3120],
-        rows: [
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 3120, type: WidthType.DXA }},
-                shading: {{ fill: "D9D9D9", type: ShadingType.CLEAR }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{
-                  children: [new TextRun({{ text: "วัสดุ", bold: true }})]
-                }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 3120, type: WidthType.DXA }},
-                shading: {{ fill: "D9D9D9", type: ShadingType.CLEAR }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{
-                  children: [new TextRun({{ text: "SSD (kg/m³)", bold: true }})]
-                }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 3120, type: WidthType.DXA }},
-                shading: {{ fill: "D9D9D9", type: ShadingType.CLEAR }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{
-                  children: [new TextRun({{ text: "สำหรับผสม (kg/m³)", bold: true }})]
-                }})]
-              }})]
-          }}),
-          
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 3120, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun("น้ำผสม")] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 3120, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun(mix.Water.toFixed(1))] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 3120, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                shading: {{ fill: "FFFF99", type: ShadingType.CLEAR }},
-                children: [new Paragraph({{ children: [new TextRun({{ text: moisture.corrected_water.toFixed(1), bold: true }})] }})]
-              }})]
-          }}),
-          
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 3120, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun("ปูนซีเมนต์")] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 3120, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun(mix.Cement.toFixed(1))] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 3120, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                shading: {{ fill: "FFFF99", type: ShadingType.CLEAR }},
-                children: [new Paragraph({{ children: [new TextRun({{ text: mix.Cement.toFixed(1), bold: true }})] }})]
-              }})]
-          }}),
-          
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 3120, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun("มวลรวมละเอียด")] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 3120, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun(mix["Fine Aggregate"].toFixed(1))] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 3120, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                shading: {{ fill: "FFFF99", type: ShadingType.CLEAR }},
-                children: [new Paragraph({{ children: [new TextRun({{ text: moisture.batch_fine.toFixed(1), bold: true }})] }})]
-              }})]
-          }}),
-          
-          new TableRow({{
-            children: [
-              new TableCell({{
-                borders,
-                width: {{ size: 3120, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun("มวลรวมหยาบ")] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 3120, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                children: [new Paragraph({{ children: [new TextRun(mix["Coarse Aggregate"].toFixed(1))] }})]
-              }}),
-              new TableCell({{
-                borders,
-                width: {{ size: 3120, type: WidthType.DXA }},
-                margins: {{ top: 80, bottom: 80, left: 120, right: 120 }},
-                shading: {{ fill: "FFFF99", type: ShadingType.CLEAR }},
-                children: [new Paragraph({{ children: [new TextRun({{ text: moisture.batch_coarse.toFixed(1), bold: true }})] }})]
-              }})]
-          }})]
-      }}),
-      
-      new Paragraph({{
-        spacing: {{ before: 240 }},
-        children: [new TextRun({{
-          text: "หมายเหตุ: ค่าที่ไฮไลต์เป็นสีเหลืองคือส่วนผสมที่ต้องใช้ในการผสมคอนกรีตจริง",
-          italics: true
-        }})]
-      }})
+    for i, (label, value) in enumerate(data1, start=1):
+        row_cells = table1.rows[i].cells
+        row_cells[0].text = label
+        row_cells[1].text = value
+        for cell in row_cells:
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    set_thai_font(run)
+    
+    # ส่วนที่ 2: ขั้นตอนการคำนวณ
+    doc.add_heading('2. ขั้นตอนการคำนวณตามวิธี ACI 211.1', 1)
+    
+    # ขั้นตอนที่ 1
+    p = doc.add_paragraph()
+    run = p.add_run('ขั้นตอนที่ 1: กำหนดปริมาณน้ำและปริมาณมวลรวมหยาบ')
+    set_thai_font(run, bold=True)
+    
+    vol_coarse_ratio = 0.62 if input_data['max_agg_mm'] == 20 else (0.64 if input_data['max_agg_mm'] == 25 else 0.68)
+    text1 = f"จากตาราง ACI สำหรับขนาดมวลรวมหยาบสูงสุด {input_data['max_agg_mm']} mm:\n"
+    text1 += f"  - ปริมาณน้ำ = {mix_result['Water']:.1f} kg/m³\n"
+    text1 += f"  - สัดส่วนปริมาตรมวลรวมหยาบ = {vol_coarse_ratio}"
+    p = doc.add_paragraph(text1)
+    for run in p.runs:
+        set_thai_font(run)
+    
+    # ขั้นตอนที่ 2
+    p = doc.add_paragraph()
+    run = p.add_run('ขั้นตอนที่ 2: คำนวณปริมาณปูนซีเมนต์')
+    set_thai_font(run, bold=True)
+    
+    text2 = f"ปริมาณปูนซีเมนต์ = น้ำ / (w/c) = {mix_result['Water']:.1f} / {input_data['wc_ratio']} = {mix_result['Cement']:.1f} kg/m³"
+    p = doc.add_paragraph(text2)
+    for run in p.runs:
+        set_thai_font(run)
+    
+    # ขั้นตอนที่ 3
+    p = doc.add_paragraph()
+    run = p.add_run('ขั้นตอนที่ 3: คำนวณน้ำหนักมวลรวมหยาบ')
+    set_thai_font(run, bold=True)
+    
+    text3 = f"น้ำหนักมวลรวมหยาบ = สัดส่วนปริมาตร × น้ำหนักหน่วย\n"
+    text3 += f"  = {vol_coarse_ratio} × {input_data['unit_weight_coarse']} = {mix_result['Coarse Aggregate']:.1f} kg/m³"
+    p = doc.add_paragraph(text3)
+    for run in p.runs:
+        set_thai_font(run)
+    
+    # ขั้นตอนที่ 4
+    p = doc.add_paragraph()
+    run = p.add_run('ขั้นตอนที่ 4: คำนวณปริมาตรสัมบูรณ์ของแต่ละวัสดุ')
+    set_thai_font(run, bold=True)
+    
+    text4 = f"ปริมาตรน้ำ = {mix_result['Water']:.1f} / 1000 = {mix_result['vol_water']:.4f} m³\n"
+    text4 += f"ปริมาตรปูนซีเมนต์ = {mix_result['Cement']:.1f} / ({input_data['sg_cement']} × 1000) = {mix_result['vol_cement']:.4f} m³\n"
+    text4 += f"ปริมาตรมวลรวมหยาบ = {mix_result['Coarse Aggregate']:.1f} / ({input_data['sg_coarse']} × 1000) = {mix_result['vol_coarse']:.4f} m³\n"
+    text4 += f"ปริมาตรอากาศ = {input_data['air_content']*100:.1f}% = {mix_result['vol_air']:.4f} m³"
+    p = doc.add_paragraph(text4)
+    for run in p.runs:
+        set_thai_font(run)
+    
+    # ขั้นตอนที่ 5
+    p = doc.add_paragraph()
+    run = p.add_run('ขั้นตอนที่ 5: คำนวณปริมาตรมวลรวมละเอียด')
+    set_thai_font(run, bold=True)
+    
+    text5 = f"ปริมาตรมวลรวมละเอียด = 1 - (น้ำ + ปูนซีเมนต์ + มวลรวมหยาบ + อากาศ)\n"
+    text5 += f"  = 1 - ({mix_result['vol_water']:.4f} + {mix_result['vol_cement']:.4f} + {mix_result['vol_coarse']:.4f} + {mix_result['vol_air']:.4f})\n"
+    text5 += f"  = {mix_result['vol_fine']:.4f} m³"
+    p = doc.add_paragraph(text5)
+    for run in p.runs:
+        set_thai_font(run)
+    
+    # ขั้นตอนที่ 6
+    p = doc.add_paragraph()
+    run = p.add_run('ขั้นตอนที่ 6: คำนวณน้ำหนักมวลรวมละเอียด')
+    set_thai_font(run, bold=True)
+    
+    text6 = f"น้ำหนักมวลรวมละเอียด = ปริมาตร × ความถ่วงจำเพาะ × 1000\n"
+    text6 += f"  = {mix_result['vol_fine']:.4f} × {input_data['sg_fine']} × 1000\n"
+    text6 += f"  = {mix_result['Fine Aggregate']:.1f} kg/m³"
+    p = doc.add_paragraph(text6)
+    for run in p.runs:
+        set_thai_font(run)
+    
+    # ส่วนที่ 3: ผลลัพธ์ SSD
+    doc.add_heading('3. ผลการออกแบบส่วนผสมคอนกรีต (สภาพ SSD)', 1)
+    
+    table2 = doc.add_table(rows=5, cols=2)
+    table2.style = 'Light Grid Accent 1'
+    
+    hdr_cells = table2.rows[0].cells
+    hdr_cells[0].text = 'วัสดุ'
+    hdr_cells[1].text = 'ปริมาณ (kg/m³)'
+    for cell in hdr_cells:
+        for paragraph in cell.paragraphs:
+            for run in paragraph.runs:
+                set_thai_font(run, bold=True)
+    
+    data2 = [
+        ('น้ำ', f"{mix_result['Water']:.1f}"),
+        ('ปูนซีเมนต์', f"{mix_result['Cement']:.1f}"),
+        ('มวลรวมละเอียด', f"{mix_result['Fine Aggregate']:.1f}"),
+        ('มวลรวมหยาบ', f"{mix_result['Coarse Aggregate']:.1f}")
     ]
-  }}]
-}});
-
-Packer.toBuffer(doc).then(buffer => {{
-  fs.writeFileSync('/home/claude/concrete_mix_report.docx', buffer);
-  console.log('Word document created successfully!');
-}});
-"""
     
-    # เขียนไฟล์ JS
-    with open('/home/claude/create_report.js', 'w', encoding='utf-8') as f:
-        f.write(js_code)
+    for i, (label, value) in enumerate(data2, start=1):
+        row_cells = table2.rows[i].cells
+        row_cells[0].text = label
+        row_cells[1].text = value
+        for cell in row_cells:
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    set_thai_font(run)
     
-    # ติดตั้ง docx ถ้ายังไม่มี
-    subprocess.run(['npm', 'install', '-g', 'docx'], 
-                   capture_output=True, cwd='/home/claude')
+    # ส่วนที่ 4: การปรับแก้ความชื้น
+    doc.add_heading('4. การปรับแก้เนื่องจากความชื้นในมวลรวม', 1)
     
-    # รัน Node.js
-    result = subprocess.run(['node', '/home/claude/create_report.js'],
-                          capture_output=True, text=True, cwd='/home/claude')
+    # 4.1 มวลรวมละเอียด
+    p = doc.add_paragraph()
+    run = p.add_run('4.1 การคำนวณสำหรับมวลรวมละเอียด')
+    set_thai_font(run, bold=True)
     
-    if result.returncode == 0:
-        return '/home/claude/concrete_mix_report.docx'
-    else:
-        raise Exception(f"Error creating Word report: {result.stderr}")
+    text_mc1 = f"ความชื้น (MC) = {input_data['mc_fine']:.1f}%\n"
+    text_mc1 += f"การดูดซับน้ำ (Absorption) = {input_data['abs_fine']:.1f}%\n"
+    text_mc1 += f"การเปลี่ยนแปลงน้ำหนักน้ำ = น้ำหนัก SSD × (MC - Absorption) / 100\n"
+    text_mc1 += f"  = {mix_result['Fine Aggregate']:.1f} × ({input_data['mc_fine']:.1f} - {input_data['abs_fine']:.1f}) / 100\n"
+    text_mc1 += f"  = {moisture_result['dw_fine']:.1f} kg/m³\n\n"
+    text_mc1 += f"น้ำหนักมวลรวมละเอียดสำหรับผสม = น้ำหนัก SSD × (1 + MC/100)\n"
+    text_mc1 += f"  = {mix_result['Fine Aggregate']:.1f} × (1 + {input_data['mc_fine']:.1f}/100)\n"
+    text_mc1 += f"  = {moisture_result['batch_fine']:.1f} kg/m³"
+    p = doc.add_paragraph(text_mc1)
+    for run in p.runs:
+        set_thai_font(run)
+    
+    # 4.2 มวลรวมหยาบ
+    p = doc.add_paragraph()
+    run = p.add_run('4.2 การคำนวณสำหรับมวลรวมหยาบ')
+    set_thai_font(run, bold=True)
+    
+    text_mc2 = f"ความชื้น (MC) = {input_data['mc_coarse']:.1f}%\n"
+    text_mc2 += f"การดูดซับน้ำ (Absorption) = {input_data['abs_coarse']:.1f}%\n"
+    text_mc2 += f"การเปลี่ยนแปลงน้ำหนักน้ำ = น้ำหนัก SSD × (MC - Absorption) / 100\n"
+    text_mc2 += f"  = {mix_result['Coarse Aggregate']:.1f} × ({input_data['mc_coarse']:.1f} - {input_data['abs_coarse']:.1f}) / 100\n"
+    text_mc2 += f"  = {moisture_result['dw_coarse']:.1f} kg/m³\n\n"
+    text_mc2 += f"น้ำหนักมวลรวมหยาบสำหรับผสม = น้ำหนัก SSD × (1 + MC/100)\n"
+    text_mc2 += f"  = {mix_result['Coarse Aggregate']:.1f} × (1 + {input_data['mc_coarse']:.1f}/100)\n"
+    text_mc2 += f"  = {moisture_result['batch_coarse']:.1f} kg/m³"
+    p = doc.add_paragraph(text_mc2)
+    for run in p.runs:
+        set_thai_font(run)
+    
+    # 4.3 ปรับแก้น้ำ
+    p = doc.add_paragraph()
+    run = p.add_run('4.3 การปรับแก้ปริมาณน้ำผสม')
+    set_thai_font(run, bold=True)
+    
+    text_mc3 = f"น้ำที่มาจากมวลรวมทั้งหมด = {moisture_result['dw_fine']:.1f} + {moisture_result['dw_coarse']:.1f} = {moisture_result['total_delta_water']:.1f} kg/m³\n"
+    text_mc3 += f"ปริมาณน้ำผสมที่ต้องเติม = {mix_result['Water']:.1f} - {moisture_result['total_delta_water']:.1f} = {moisture_result['corrected_water']:.1f} kg/m³"
+    p = doc.add_paragraph(text_mc3)
+    for run in p.runs:
+        set_thai_font(run)
+    
+    # ส่วนที่ 5: สรุปส่วนผสม
+    doc.add_heading('5. สรุปส่วนผสมคอนกรีตสำหรับการผสม', 1)
+    
+    table3 = doc.add_table(rows=5, cols=3)
+    table3.style = 'Light Grid Accent 1'
+    
+    hdr_cells = table3.rows[0].cells
+    hdr_cells[0].text = 'วัสดุ'
+    hdr_cells[1].text = 'SSD (kg/m³)'
+    hdr_cells[2].text = 'สำหรับผสม (kg/m³)'
+    for cell in hdr_cells:
+        for paragraph in cell.paragraphs:
+            for run in paragraph.runs:
+                set_thai_font(run, bold=True)
+    
+    data3 = [
+        ('น้ำผสม', f"{mix_result['Water']:.1f}", f"{moisture_result['corrected_water']:.1f}"),
+        ('ปูนซีเมนต์', f"{mix_result['Cement']:.1f}", f"{mix_result['Cement']:.1f}"),
+        ('มวลรวมละเอียด', f"{mix_result['Fine Aggregate']:.1f}", f"{moisture_result['batch_fine']:.1f}"),
+        ('มวลรวมหยาบ', f"{mix_result['Coarse Aggregate']:.1f}", f"{moisture_result['batch_coarse']:.1f}")
+    ]
+    
+    for i, (label, ssd, batch) in enumerate(data3, start=1):
+        row_cells = table3.rows[i].cells
+        row_cells[0].text = label
+        row_cells[1].text = ssd
+        row_cells[2].text = batch
+        for cell in row_cells:
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    set_thai_font(run)
+    
+    # หมายเหตุ
+    p = doc.add_paragraph('หมายเหตุ: คอลัมน์ "สำหรับผสม" คือส่วนผสมที่ต้องใช้ในการผสมคอนกรีตจริง')
+    for run in p.runs:
+        set_thai_font(run)
+        run.italic = True
+    
+    # บันทึกไฟล์
+    output_path = '/home/claude/concrete_mix_report.docx'
+    doc.save(output_path)
+    
+    return output_path
 
 
 # =========================================================
@@ -969,13 +591,32 @@ if st.button("🧮 คำนวณส่วนผสมคอนกรีต", t
 
     # ---- Pie Chart ----
     st.subheader("📈 สัดส่วนวัสดุ (สภาพ SSD)")
+    
+    # เตรียม labels ในภาษาไทย
+    labels_thai = ["น้ำ", "ปูนซีเมนต์", "มวลรวมละเอียด", "มวลรวมหยาบ"]
+    values = [
+        mix["Water"],
+        mix["Cement"],
+        mix["Fine Aggregate"],
+        mix["Coarse Aggregate"]
+    ]
+    
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.pie(
-        df_mix["ปริมาณ (kg/m³)"],
-        labels=df_mix["วัสดุ"],
+    wedges, texts, autotexts = ax.pie(
+        values,
+        labels=labels_thai,
         autopct="%1.1f%%",
         startangle=90
     )
+    
+    # ปรับขนาดฟอนต์
+    for text in texts:
+        text.set_fontsize(12)
+    for autotext in autotexts:
+        autotext.set_color('white')
+        autotext.set_fontsize(10)
+        autotext.set_weight('bold')
+    
     ax.axis("equal")
     st.pyplot(fig)
 
@@ -1027,6 +668,8 @@ if st.button("🧮 คำนวณส่วนผสมคอนกรีต", t
                 
             except Exception as e:
                 st.error(f"❌ เกิดข้อผิดพลาด: {e}")
+                import traceback
+                st.code(traceback.format_exc())
 
     st.success("คำนวณเรียบร้อย ✔")
 
