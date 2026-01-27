@@ -8,8 +8,8 @@ from io import BytesIO
 # ตั้งค่าฟอนต์ไทยสำหรับ matplotlib
 try:
     import matplotlib.font_manager as fm
-    # ใช้ฟอนต์ที่รองรับภาษาไทย
-    plt.rcParams['font.family'] = 'DejaVu Sans'
+    # ใช้ฟอนต์ Loma ที่รองรับภาษาไทย
+    plt.rcParams['font.family'] = 'Loma'
     # ตั้งค่าให้แสดงเครื่องหมายลบได้ถูกต้อง
     plt.rcParams['axes.unicode_minus'] = False
 except:
@@ -609,12 +609,13 @@ if st.button("🧮 คำนวณส่วนผสมคอนกรีต", t
         startangle=90
     )
     
-    # ปรับขนาดฟอนต์
+    # ตั้งค่าฟอนต์ Loma สำหรับภาษาไทย
     for text in texts:
-        text.set_fontsize(12)
+        text.set_fontsize(14)
+        text.set_family('Loma')
     for autotext in autotexts:
         autotext.set_color('white')
-        autotext.set_fontsize(10)
+        autotext.set_fontsize(11)
         autotext.set_weight('bold')
     
     ax.axis("equal")
