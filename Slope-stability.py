@@ -43,6 +43,7 @@ class SoilLayer:
     e0: float  # Initial void ratio
     OCR: float  # Over-consolidation ratio
     Cv: float  # Coefficient of consolidation (m²/year)
+    color: str = "#8B7355"  # Layer display color (hex)
     
     def __post_init__(self):
         """Ensure all numeric values are float"""
@@ -57,6 +58,44 @@ class SoilLayer:
         self.e0 = float(self.e0)
         self.OCR = float(self.OCR)
         self.Cv = float(self.Cv)
+        # Ensure color is a valid hex string
+        if not isinstance(self.color, str) or not self.color.startswith('#'):
+            self.color = "#8B7355"
+
+# ============================================================
+# Predefined Soil Color Palettes
+# ============================================================
+
+SOIL_COLOR_PRESETS = {
+    "Clay (Soft)": "#8B4513",       # Saddle Brown
+    "Clay (Medium)": "#A0522D",     # Sienna
+    "Clay (Stiff)": "#6B4423",      # Dark Brown
+    "Silty Clay": "#BC8F8F",        # Rosy Brown
+    "Sandy Clay": "#D2B48C",        # Tan
+    "Silt": "#C4A484",              # Burlywood variant
+    "Sandy Silt": "#DEB887",        # Burlywood
+    "Sand (Loose)": "#F4A460",      # Sandy Brown
+    "Sand (Dense)": "#DAA520",      # Goldenrod
+    "Gravel": "#A9A9A9",            # Dark Gray
+    "Sandy Gravel": "#B8860B",      # Dark Goldenrod
+    "Rock (Weathered)": "#696969",  # Dim Gray
+    "Rock (Fresh)": "#556B2F",      # Dark Olive Green
+    "Organic Soil": "#2F4F4F",      # Dark Slate Gray
+    "Peat": "#1C1C1C",              # Very Dark Gray
+    "Fill Material": "#8B7355",     # Burly Wood variant
+}
+
+# Color palette by layer index (default colors)
+DEFAULT_LAYER_COLORS = [
+    "#8B4513",  # Layer 1 - Saddle Brown
+    "#A0522D",  # Layer 2 - Sienna
+    "#CD853F",  # Layer 3 - Peru
+    "#DEB887",  # Layer 4 - Burlywood
+    "#D2691E",  # Layer 5 - Chocolate
+    "#BC8F8F",  # Layer 6 - Rosy Brown
+    "#F4A460",  # Layer 7 - Sandy Brown
+    "#DAA520",  # Layer 8 - Goldenrod
+]
 
 @dataclass
 class SlipCircle:
@@ -667,7 +706,7 @@ def plot_slope_and_circle(slope_geometry: dict, soil_layers: List[SoilLayer],
                           gwl: float, result: AnalysisResults, 
                           show_slices: bool = True) -> plt.Figure:
     """
-    วาดรูปลาดดินและ slip circle
+    วาดรูปลาดดินและ slip circle พร้อมแสดงสีดินแต่ละชั้นตามที่ผู้ใช้กำหนด
     """
     fig, ax = plt.subplots(1, 1, figsize=(14, 10))
     
@@ -681,36 +720,86 @@ def plot_slope_and_circle(slope_geometry: dict, soil_layers: List[SoilLayer],
     # Crest elevation
     crest_elevation = toe_elevation + H
     
-    # Plot soil layers
-    colors = plt.cm.YlOrBr(np.linspace(0.2, 0.8, len(soil_layers)))
-    
     # Calculate total soil thickness and bottom elevation
     total_soil_thickness = sum(layer.thickness for layer in soil_layers)
     bottom_elevation = crest_elevation - total_soil_thickness
     
-    # Draw ground/embankment fill
-    slope_poly = plt.Polygon([
-        (toe_x - 10, bottom_elevation - 2),  # Bottom left
-        (toe_x - 10, toe_elevation),          # Left at toe level
-        (toe_x, toe_elevation),               # Toe
-        (toe_x + slope_width, crest_elevation),  # Top of slope
-        (toe_x + slope_width + crest_width + 10, crest_elevation),  # Right at crest
-        (toe_x + slope_width + crest_width + 10, bottom_elevation - 2)  # Bottom right
-    ], facecolor='#8B7355', edgecolor='#5D4E37', linewidth=2)
-    ax.add_patch(slope_poly)
+    # Define slope profile points
+    x_left = toe_x - 10
+    x_right = toe_x + slope_width + crest_width + 10
     
-    # Draw layer boundaries (from crest going down)
+    # Draw each soil layer with its own color
     cumulative = 0
     for i, layer in enumerate(soil_layers):
         y_top = crest_elevation - cumulative
         y_bottom = crest_elevation - cumulative - layer.thickness
         cumulative += layer.thickness
         
-        ax.axhline(y=y_bottom, color='brown', linestyle='--', alpha=0.5, linewidth=1)
+        # Get layer color (use default if not specified)
+        layer_color = getattr(layer, 'color', DEFAULT_LAYER_COLORS[i % len(DEFAULT_LAYER_COLORS)])
+        
+        # Create polygon for this layer respecting slope geometry
+        # Left side (flat), slope section, and right side (flat at crest)
+        layer_points = []
+        
+        # Bottom left corner
+        layer_points.append((x_left, max(y_bottom, bottom_elevation - 2)))
+        
+        # Left side at y_top (but clipped by slope)
+        if y_top <= toe_elevation:
+            # Layer entirely below toe - flat left side
+            layer_points.append((x_left, y_top))
+        else:
+            # Layer crosses toe level
+            layer_points.append((x_left, min(y_top, toe_elevation)))
+            if y_top > toe_elevation:
+                # Part of layer is above toe - follow slope
+                x_at_top = toe_x + (y_top - toe_elevation) * slope_ratio
+                if x_at_top < toe_x + slope_width:
+                    layer_points.append((toe_x, toe_elevation))
+                    layer_points.append((x_at_top, y_top))
+                else:
+                    # Layer reaches crest level
+                    layer_points.append((toe_x, toe_elevation))
+                    layer_points.append((toe_x + slope_width, crest_elevation))
+        
+        # Top right corner
+        layer_points.append((x_right, y_top))
+        
+        # Bottom right corner  
+        layer_points.append((x_right, max(y_bottom, bottom_elevation - 2)))
+        
+        # Handle bottom boundary with slope
+        if y_bottom <= toe_elevation:
+            # Layer bottom below toe
+            pass
+        else:
+            # Layer bottom above toe - need to follow slope
+            x_at_bottom = toe_x + (y_bottom - toe_elevation) * slope_ratio
+            if x_at_bottom < toe_x + slope_width:
+                layer_points.append((x_at_bottom, y_bottom))
+                layer_points.append((toe_x, toe_elevation))
+        
+        # Draw layer polygon
+        if len(layer_points) >= 3:
+            layer_poly = plt.Polygon(
+                layer_points, 
+                facecolor=layer_color, 
+                edgecolor='#333333',
+                linewidth=1,
+                alpha=0.85
+            )
+            ax.add_patch(layer_poly)
+        
+        # Draw layer boundary line
+        ax.axhline(y=y_bottom, color='#333333', linestyle='--', alpha=0.6, linewidth=1)
+        
+        # Add layer label with color indicator
+        label_text = f'{layer.name}\nγ={layer.gamma:.1f}\nc={layer.cohesion:.1f}\nφ={layer.phi:.1f}°'
         ax.text(toe_x - 8, (y_top + y_bottom) / 2, 
-                f'{layer.name}\nγ={layer.gamma:.1f}\nc={layer.cohesion:.1f}\nφ={layer.phi:.1f}°',
+                label_text,
                 fontsize=8, va='center', ha='left',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+                bbox=dict(boxstyle='round', facecolor=layer_color, alpha=0.7, edgecolor='#333'))
     
     # Draw water table
     ax.axhline(y=gwl, color='blue', linestyle='-', linewidth=2, alpha=0.7, label=f'GWL = {gwl:.1f} m')
@@ -767,11 +856,25 @@ def plot_slope_and_circle(slope_geometry: dict, soil_layers: List[SoilLayer],
                    transform=ax.transAxes, fontsize=10, color='red',
                    verticalalignment='top', horizontalalignment='right')
     
+    # Add soil layer legend with colors
+    from matplotlib.patches import Patch
+    legend_elements = []
+    for i, layer in enumerate(soil_layers):
+        layer_color = getattr(layer, 'color', DEFAULT_LAYER_COLORS[i % len(DEFAULT_LAYER_COLORS)])
+        legend_elements.append(Patch(facecolor=layer_color, edgecolor='#333',
+                                     label=f'{layer.name} (c={layer.cohesion:.0f}, φ={layer.phi:.0f}°)'))
+    
+    # Add water table and slip surface to legend
+    legend_elements.append(plt.Line2D([0], [0], color='blue', linewidth=2, label=f'GWL = {gwl:.1f} m'))
+    if result and result.critical_circle:
+        legend_elements.append(plt.Line2D([0], [0], color='red', linewidth=3, label='Slip Surface'))
+    
+    ax.legend(handles=legend_elements, loc='upper left', fontsize=9, framealpha=0.9)
+    
     # Labels
     ax.set_xlabel('Distance (m)', fontsize=12)
     ax.set_ylabel('Elevation (m)', fontsize=12)
     ax.set_title('Slope Stability Analysis - Slip Circle Method', fontsize=14, fontweight='bold')
-    ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3)
     ax.set_aspect('equal')
     
@@ -918,9 +1021,12 @@ def load_from_json(json_str: str) -> Tuple[dict, List[SoilLayer], float, dict]:
         'toe_elevation': float(data['slope_geometry'].get('toe_elevation', 0.0))
     }
     
-    # Convert soil layer values to float
+    # Convert soil layer values to float (with color support)
     soil_layers = []
-    for layer in data['soil_layers']:
+    for i, layer in enumerate(data['soil_layers']):
+        # Get color from JSON or use default
+        layer_color = layer.get('color', DEFAULT_LAYER_COLORS[i % len(DEFAULT_LAYER_COLORS)])
+        
         soil_layers.append(SoilLayer(
             name=layer['name'],
             thickness=float(layer['thickness']),
@@ -933,7 +1039,8 @@ def load_from_json(json_str: str) -> Tuple[dict, List[SoilLayer], float, dict]:
             Cr=float(layer['Cr']),
             e0=float(layer['e0']),
             OCR=float(layer['OCR']),
-            Cv=float(layer['Cv'])
+            Cv=float(layer['Cv']),
+            color=layer_color
         ))
     
     gwl = float(data['gwl'])
@@ -1189,8 +1296,8 @@ def main():
     # Initialize session state
     if 'soil_layers' not in st.session_state:
         st.session_state.soil_layers = [
-            SoilLayer("Layer 1 - Clay", 3.0, 18.0, 19.5, 25.0, 10.0, 15000, 0.35, 0.08, 0.8, 1.5, 1.0),
-            SoilLayer("Layer 2 - Silty Clay", 4.0, 17.5, 19.0, 15.0, 18.0, 20000, 0.25, 0.06, 0.7, 2.0, 2.5),
+            SoilLayer("Layer 1 - Clay", 3.0, 18.0, 19.5, 25.0, 10.0, 15000, 0.35, 0.08, 0.8, 1.5, 1.0, "#8B4513"),
+            SoilLayer("Layer 2 - Silty Clay", 4.0, 17.5, 19.0, 15.0, 18.0, 20000, 0.25, 0.06, 0.7, 2.0, 2.5, "#A0522D"),
         ]
     if 'analysis_result' not in st.session_state:
         st.session_state.analysis_result = None
@@ -1379,9 +1486,10 @@ def main():
         
         # Adjust layer list
         while len(st.session_state.soil_layers) < n_layers:
-            i = len(st.session_state.soil_layers) + 1
+            i = len(st.session_state.soil_layers)
+            default_color = DEFAULT_LAYER_COLORS[i % len(DEFAULT_LAYER_COLORS)]
             st.session_state.soil_layers.append(
-                SoilLayer(f"Layer {i}", 3.0, 18.0, 19.5, 20.0, 15.0, 15000, 0.3, 0.06, 0.75, 1.5, 1.5)
+                SoilLayer(f"Layer {i+1}", 3.0, 18.0, 19.5, 20.0, 15.0, 15000, 0.3, 0.06, 0.75, 1.5, 1.5, default_color)
             )
         while len(st.session_state.soil_layers) > n_layers:
             st.session_state.soil_layers.pop()
@@ -1391,7 +1499,7 @@ def main():
         # Layer input
         for i in range(n_layers):
             with st.expander(f"📋 Layer {i+1}: {st.session_state.soil_layers[i].name}", expanded=(i == 0)):
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns([1, 1, 1, 0.6])
                 
                 with col1:
                     st.markdown("**Basic Properties**")
@@ -1449,9 +1557,50 @@ def main():
                                         value=float(st.session_state.soil_layers[i].Cv),
                                         step=0.5, key=f"Cv_{i}")
                 
-                # Update layer
+                with col4:
+                    st.markdown("**🎨 Layer Color**")
+                    
+                    # Get current color
+                    current_color = getattr(st.session_state.soil_layers[i], 'color', DEFAULT_LAYER_COLORS[i % len(DEFAULT_LAYER_COLORS)])
+                    
+                    # Color picker
+                    selected_color = st.color_picker(
+                        f"Select Color##{i}",
+                        value=current_color,
+                        key=f"color_{i}",
+                        help="เลือกสีสำหรับแสดงชั้นดินนี้ในภาพ"
+                    )
+                    
+                    # Preset color selection
+                    st.markdown("**Quick Presets:**")
+                    preset_options = ["-- Select Preset --"] + list(SOIL_COLOR_PRESETS.keys())
+                    preset_choice = st.selectbox(
+                        f"Soil Type Preset##{i}",
+                        options=preset_options,
+                        key=f"preset_{i}",
+                        help="เลือกสีตามประเภทดิน"
+                    )
+                    
+                    # Apply preset if selected
+                    if preset_choice != "-- Select Preset --":
+                        selected_color = SOIL_COLOR_PRESETS[preset_choice]
+                    
+                    # Show color preview
+                    st.markdown(f"""
+                    <div style="
+                        background-color: {selected_color};
+                        width: 100%;
+                        height: 40px;
+                        border-radius: 5px;
+                        border: 2px solid #333;
+                        margin-top: 5px;
+                    "></div>
+                    <p style="font-size: 0.8em; color: #666; text-align: center;">{selected_color}</p>
+                    """, unsafe_allow_html=True)
+                
+                # Update layer with color
                 st.session_state.soil_layers[i] = SoilLayer(
-                    name, thickness, gamma, gamma_sat, cohesion, phi, E, Cc, Cr, e0, OCR, Cv
+                    name, thickness, gamma, gamma_sat, cohesion, phi, E, Cc, Cr, e0, OCR, Cv, selected_color
                 )
         
         # Summary table
@@ -1460,7 +1609,9 @@ def main():
         summary_data = []
         total_thickness = 0
         for layer in st.session_state.soil_layers:
+            layer_color = getattr(layer, 'color', '#8B7355')
             summary_data.append({
+                'Color': layer_color,
                 'Layer': layer.name,
                 'Thickness (m)': layer.thickness,
                 'γ (kN/m³)': layer.gamma,
@@ -1474,7 +1625,76 @@ def main():
             })
             total_thickness += layer.thickness
         
-        st.dataframe(summary_data, use_container_width=True)
+        # Create HTML table with color column
+        html_table = """
+        <style>
+        .soil-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 10px 0;
+            font-size: 14px;
+        }
+        .soil-table th {
+            background-color: #1E3A5F;
+            color: white;
+            padding: 10px;
+            text-align: center;
+            border: 1px solid #ddd;
+        }
+        .soil-table td {
+            padding: 8px;
+            text-align: center;
+            border: 1px solid #ddd;
+        }
+        .soil-table tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        .soil-table tr:hover {
+            background-color: #f1f1f1;
+        }
+        .color-box {
+            width: 30px;
+            height: 30px;
+            border-radius: 4px;
+            border: 2px solid #333;
+            display: inline-block;
+        }
+        </style>
+        <table class="soil-table">
+        <tr>
+            <th>Color</th>
+            <th>Layer</th>
+            <th>Thickness (m)</th>
+            <th>γ (kN/m³)</th>
+            <th>γ_sat (kN/m³)</th>
+            <th>c' (kPa)</th>
+            <th>φ' (°)</th>
+            <th>E (kPa)</th>
+            <th>Cc</th>
+            <th>e₀</th>
+            <th>OCR</th>
+        </tr>
+        """
+        
+        for row in summary_data:
+            html_table += f"""
+            <tr>
+                <td><div class="color-box" style="background-color: {row['Color']};"></div></td>
+                <td>{row['Layer']}</td>
+                <td>{row['Thickness (m)']:.2f}</td>
+                <td>{row['γ (kN/m³)']:.1f}</td>
+                <td>{row['γ_sat (kN/m³)']:.1f}</td>
+                <td>{row["c' (kPa)"]:.1f}</td>
+                <td>{row["φ' (°)"]:.1f}</td>
+                <td>{row['E (kPa)']:.0f}</td>
+                <td>{row['Cc']:.2f}</td>
+                <td>{row['e₀']:.2f}</td>
+                <td>{row['OCR']:.1f}</td>
+            </tr>
+            """
+        
+        html_table += "</table>"
+        st.markdown(html_table, unsafe_allow_html=True)
         st.info(f"📏 Total Soil Profile Thickness: **{total_thickness:.1f} m**")
         
         # Download configuration
