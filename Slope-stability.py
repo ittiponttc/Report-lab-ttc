@@ -43,6 +43,20 @@ class SoilLayer:
     e0: float  # Initial void ratio
     OCR: float  # Over-consolidation ratio
     Cv: float  # Coefficient of consolidation (m²/year)
+    
+    def __post_init__(self):
+        """Ensure all numeric values are float"""
+        self.thickness = float(self.thickness)
+        self.gamma = float(self.gamma)
+        self.gamma_sat = float(self.gamma_sat)
+        self.cohesion = float(self.cohesion)
+        self.phi = float(self.phi)
+        self.E = float(self.E)
+        self.Cc = float(self.Cc)
+        self.Cr = float(self.Cr)
+        self.e0 = float(self.e0)
+        self.OCR = float(self.OCR)
+        self.Cv = float(self.Cv)
 
 @dataclass
 class SlipCircle:
@@ -97,20 +111,21 @@ def get_slope_surface_y(x: float, slope_geometry: dict) -> float:
     slope_ratio = slope_geometry['slope_ratio']  # H:V ratio
     crest_width = slope_geometry['crest_width']
     toe_x = slope_geometry['toe_x']
+    toe_elevation = slope_geometry.get('toe_elevation', 0.0)
     
     # Slope width
     slope_width = H * slope_ratio
     
     # Regions
     if x < toe_x:
-        return 0  # Before toe
+        return toe_elevation  # Before toe (at toe elevation)
     elif x < toe_x + slope_width:
         # On slope
-        return (x - toe_x) / slope_ratio
+        return toe_elevation + (x - toe_x) / slope_ratio
     elif x < toe_x + slope_width + crest_width:
-        return H  # On crest
+        return toe_elevation + H  # On crest
     else:
-        return H  # Beyond crest
+        return toe_elevation + H  # Beyond crest
 
 def generate_slip_circle(slope_geometry: dict, x_offset: float = 0, y_offset: float = 0, r_factor: float = 1.0) -> SlipCircle:
     """
@@ -119,14 +134,15 @@ def generate_slip_circle(slope_geometry: dict, x_offset: float = 0, y_offset: fl
     H = slope_geometry['height']
     slope_ratio = slope_geometry['slope_ratio']
     toe_x = slope_geometry['toe_x']
+    toe_elevation = slope_geometry.get('toe_elevation', 0.0)
     
     # Default circle center above slope
     slope_width = H * slope_ratio
     x_center = toe_x + slope_width / 2 + x_offset
-    y_center = H * 1.2 + y_offset
+    y_center = toe_elevation + H * 1.2 + y_offset
     
     # Radius to pass through toe
-    radius = np.sqrt((x_center - toe_x)**2 + y_center**2) * r_factor
+    radius = np.sqrt((x_center - toe_x)**2 + (y_center - toe_elevation)**2) * r_factor
     
     return SlipCircle(x_center, y_center, radius)
 
@@ -138,22 +154,24 @@ def slice_geometry(circle: SlipCircle, slope_geometry: dict, n_slices: int = 20)
     H = slope_geometry['height']
     toe_x = slope_geometry['toe_x']
     slope_ratio = slope_geometry['slope_ratio']
+    toe_elevation = slope_geometry.get('toe_elevation', 0.0)
     slope_width = H * slope_ratio
     
     xc, yc, R = circle.x_center, circle.y_center, circle.radius
     
     # Find x range where circle intersects ground
     # Circle equation: (x-xc)² + (y-yc)² = R²
-    # For y = 0 (at toe level): x = xc ± sqrt(R² - yc²)
+    # For y = toe_elevation: x = xc ± sqrt(R² - (yc-toe_elevation)²)
     
-    if R**2 < yc**2:
-        return []  # Circle doesn't reach ground
+    y_diff = yc - toe_elevation
+    if R**2 < y_diff**2:
+        return []  # Circle doesn't reach ground level
     
-    x_left = xc - np.sqrt(R**2 - yc**2)
+    x_left = xc - np.sqrt(R**2 - y_diff**2)
     x_left = max(x_left, toe_x - 5)
     
     # Find right intersection (with slope surface) iteratively
-    x_right = xc + np.sqrt(R**2 - yc**2)
+    x_right = xc + np.sqrt(R**2 - y_diff**2)
     x_right = min(x_right, toe_x + slope_width + slope_geometry['crest_width'] + 5)
     
     # Create slices
@@ -395,6 +413,7 @@ def search_critical_circle(slope_geometry: dict, soil_layers: List[SoilLayer],
     H = slope_geometry['height']
     slope_ratio = slope_geometry['slope_ratio']
     toe_x = slope_geometry['toe_x']
+    toe_elevation = slope_geometry.get('toe_elevation', 0.0)
     slope_width = H * slope_ratio
     
     min_fs = float('inf')
@@ -403,15 +422,20 @@ def search_critical_circle(slope_geometry: dict, soil_layers: List[SoilLayer],
     # Grid search for circle center
     x_range = np.linspace(-H*0.5, H*1.5, int(np.sqrt(n_circles)))
     y_range = np.linspace(H*0.5, H*2.5, int(np.sqrt(n_circles)))
-    r_factors = [0.8, 1.0, 1.2, 1.4]
+    r_factors = [0.8, 1.0, 1.2, 1.4, 1.6, 1.8]  # Extended range for deeper circles
     
     for x_off in x_range:
         for y_off in y_range:
             for r_f in r_factors:
                 circle = generate_slip_circle(slope_geometry, x_off, y_off - H*1.2, r_f)
                 
-                # Skip invalid circles
-                if circle.radius < H * 0.5 or circle.radius > H * 4:
+                # Skip invalid circles - check if circle reaches below toe
+                if circle.radius < H * 0.5 or circle.radius > H * 5:
+                    continue
+                
+                # Make sure circle goes below toe elevation
+                circle_bottom = circle.y_center - circle.radius
+                if circle_bottom > toe_elevation:
                     continue
                 
                 slices = slice_geometry(circle, slope_geometry, n_slices=15)
@@ -575,29 +599,35 @@ def plot_slope_and_circle(slope_geometry: dict, soil_layers: List[SoilLayer],
     slope_ratio = slope_geometry['slope_ratio']
     toe_x = slope_geometry['toe_x']
     crest_width = slope_geometry['crest_width']
+    toe_elevation = slope_geometry.get('toe_elevation', 0.0)
     slope_width = H * slope_ratio
+    
+    # Crest elevation
+    crest_elevation = toe_elevation + H
     
     # Plot soil layers
     colors = plt.cm.YlOrBr(np.linspace(0.2, 0.8, len(soil_layers)))
     
-    # Draw ground
-    ground_x = [toe_x - 10, toe_x, toe_x + slope_width, 
-                toe_x + slope_width + crest_width + 10]
-    ground_y = [0, 0, H, H]
+    # Calculate total soil thickness and bottom elevation
+    total_soil_thickness = sum(layer.thickness for layer in soil_layers)
+    bottom_elevation = crest_elevation - total_soil_thickness
     
-    # Fill slope
-    slope_poly = plt.Polygon([(toe_x - 10, -5), (toe_x - 10, 0), (toe_x, 0),
-                               (toe_x + slope_width, H), 
-                               (toe_x + slope_width + crest_width + 10, H),
-                               (toe_x + slope_width + crest_width + 10, -5)],
-                              facecolor='#8B7355', edgecolor='#5D4E37', linewidth=2)
+    # Draw ground/embankment fill
+    slope_poly = plt.Polygon([
+        (toe_x - 10, bottom_elevation - 2),  # Bottom left
+        (toe_x - 10, toe_elevation),          # Left at toe level
+        (toe_x, toe_elevation),               # Toe
+        (toe_x + slope_width, crest_elevation),  # Top of slope
+        (toe_x + slope_width + crest_width + 10, crest_elevation),  # Right at crest
+        (toe_x + slope_width + crest_width + 10, bottom_elevation - 2)  # Bottom right
+    ], facecolor='#8B7355', edgecolor='#5D4E37', linewidth=2)
     ax.add_patch(slope_poly)
     
-    # Draw layer boundaries
+    # Draw layer boundaries (from crest going down)
     cumulative = 0
     for i, layer in enumerate(soil_layers):
-        y_top = H - cumulative
-        y_bottom = H - cumulative - layer.thickness
+        y_top = crest_elevation - cumulative
+        y_bottom = crest_elevation - cumulative - layer.thickness
         cumulative += layer.thickness
         
         ax.axhline(y=y_bottom, color='brown', linestyle='--', alpha=0.5, linewidth=1)
@@ -609,7 +639,7 @@ def plot_slope_and_circle(slope_geometry: dict, soil_layers: List[SoilLayer],
     # Draw water table
     ax.axhline(y=gwl, color='blue', linestyle='-', linewidth=2, alpha=0.7, label=f'GWL = {gwl:.1f} m')
     ax.fill_between([toe_x - 10, toe_x + slope_width + crest_width + 10], 
-                    -5, gwl, color='lightblue', alpha=0.3)
+                    bottom_elevation - 2, gwl, color='lightblue', alpha=0.3)
     
     # Draw slip circle
     if result and result.critical_circle:
@@ -621,13 +651,13 @@ def plot_slope_and_circle(slope_geometry: dict, soil_layers: List[SoilLayer],
         y_circle = circle.y_center + circle.radius * np.sin(theta)
         ax.plot(x_circle, y_circle, 'r--', linewidth=1, alpha=0.3)
         
-        # Draw active portion
+        # Draw active portion (bottom half of circle)
         theta_range = np.linspace(-np.pi, 0, 100)
         x_active = circle.x_center + circle.radius * np.cos(theta_range)
         y_active = circle.y_center + circle.radius * np.sin(theta_range)
         
-        # Filter to show only portion within slope
-        mask = y_active >= -1
+        # Filter to show only portion above bottom limit
+        mask = y_active >= bottom_elevation - 1
         ax.plot(x_active[mask], y_active[mask], 'r-', linewidth=3, label='Slip Surface')
         
         # Mark center
@@ -640,14 +670,10 @@ def plot_slope_and_circle(slope_geometry: dict, soil_layers: List[SoilLayer],
     # Draw slices
     if show_slices and result and result.slices_data:
         for s in result.slices_data:
-            # Find slice geometry
-            for orig_slice in result.slices_data:
-                if orig_slice['index'] == s['index']:
-                    x = s['x_mid']
-                    # Draw vertical line
-                    ax.axvline(x=x, ymin=0, ymax=0.9, color='green', 
-                              linestyle=':', alpha=0.5, linewidth=0.5)
-                    break
+            x = s['x_mid']
+            # Draw vertical line
+            ax.axvline(x=x, ymin=0, ymax=0.9, color='green', 
+                      linestyle=':', alpha=0.5, linewidth=0.5)
     
     # Add FS result
     if result:
@@ -673,9 +699,9 @@ def plot_slope_and_circle(slope_geometry: dict, soil_layers: List[SoilLayer],
     ax.grid(True, alpha=0.3)
     ax.set_aspect('equal')
     
-    # Set limits
+    # Set limits - adjust for toe_elevation
     ax.set_xlim(toe_x - 12, toe_x + slope_width + crest_width + 12)
-    ax.set_ylim(-3, H * 2.5)
+    ax.set_ylim(min(bottom_elevation - 3, toe_elevation - 5), crest_elevation + H * 0.5)
     
     plt.tight_layout()
     return fig
@@ -812,7 +838,8 @@ def load_from_json(json_str: str) -> Tuple[dict, List[SoilLayer], float, dict]:
         'height': float(data['slope_geometry']['height']),
         'slope_ratio': float(data['slope_geometry']['slope_ratio']),
         'crest_width': float(data['slope_geometry']['crest_width']),
-        'toe_x': float(data['slope_geometry']['toe_x'])
+        'toe_x': float(data['slope_geometry']['toe_x']),
+        'toe_elevation': float(data['slope_geometry'].get('toe_elevation', 0.0))
     }
     
     # Convert soil layer values to float
@@ -1007,16 +1034,22 @@ def main():
                                     min_value=0.0, max_value=20.0, 
                                     value=default_toe, step=1.0,
                                     help="ตำแหน่ง X ของ toe")
+            
+            default_toe_elev = float(st.session_state.get('loaded_slope', {}).get('toe_elevation', 0.0))
+            toe_elevation = st.number_input("Toe Elevation (m)", 
+                                            min_value=-20.0, max_value=10.0, 
+                                            value=default_toe_elev, step=0.5,
+                                            help="ระดับความสูงของ toe (ค่าลบ = ต่ำกว่าระดับอ้างอิง)")
         
         with col2:
             st.markdown("**Water Table & Loading**")
             
-            default_gwl = st.session_state.get('loaded_gwl', slope_height * 0.3)
+            default_gwl = st.session_state.get('loaded_gwl', slope_height * 0.3 + toe_elevation)
             
             gwl = st.number_input("Ground Water Level (m)", 
-                                  min_value=-5.0, max_value=float(slope_height), 
+                                  min_value=-25.0, max_value=float(slope_height + toe_elevation + 5), 
                                   value=float(default_gwl), step=0.5,
-                                  help="ระดับน้ำใต้ดิน (จากระดับ toe)")
+                                  help="ระดับน้ำใต้ดิน (Elevation)")
             
             surcharge = st.number_input("Surcharge Load (kPa)", 
                                         min_value=0.0, max_value=200.0, 
@@ -1030,13 +1063,15 @@ def main():
             st.write(f"• Slope Width: **{slope_width:.2f} m**")
             st.write(f"• Slope Angle: **{slope_angle:.1f}°**")
             st.write(f"• Total Width: **{slope_width + crest_width:.2f} m**")
+            st.write(f"• Crest Elevation: **{toe_elevation + slope_height:.2f} m**")
         
         # Store geometry
         slope_geometry = {
             'height': slope_height,
             'slope_ratio': slope_ratio,
             'crest_width': crest_width,
-            'toe_x': toe_x
+            'toe_x': toe_x,
+            'toe_elevation': toe_elevation
         }
         st.session_state.slope_geometry = slope_geometry
         st.session_state.gwl = gwl
@@ -1047,33 +1082,38 @@ def main():
         
         fig_preview, ax_preview = plt.subplots(figsize=(12, 6))
         
-        # Draw slope preview
+        # Draw slope preview with toe_elevation
         slope_width = slope_height * slope_ratio
+        crest_elev = toe_elevation + slope_height
+        
         slope_x = [toe_x - 5, toe_x, toe_x + slope_width, 
                    toe_x + slope_width + crest_width, 
                    toe_x + slope_width + crest_width + 5]
-        slope_y = [0, 0, slope_height, slope_height, slope_height]
+        slope_y = [toe_elevation, toe_elevation, crest_elev, crest_elev, crest_elev]
         
-        ax_preview.fill_between(slope_x, slope_y, -2, color='#8B7355', alpha=0.7)
+        ax_preview.fill_between(slope_x, slope_y, toe_elevation - 3, color='#8B7355', alpha=0.7)
         ax_preview.plot(slope_x, slope_y, 'k-', linewidth=2)
         
         # Water table
         ax_preview.axhline(y=gwl, color='blue', linestyle='-', linewidth=2, label=f'GWL = {gwl:.1f} m')
         ax_preview.fill_between([toe_x - 5, toe_x + slope_width + crest_width + 5], 
-                                -2, gwl, color='lightblue', alpha=0.3)
+                                toe_elevation - 3, gwl, color='lightblue', alpha=0.3)
         
         # Annotations
         ax_preview.annotate(f'H = {slope_height:.1f} m', 
-                           xy=(toe_x - 2, slope_height/2), fontsize=11, fontweight='bold')
+                           xy=(toe_x - 2, toe_elevation + slope_height/2), fontsize=11, fontweight='bold')
         ax_preview.annotate(f'{slope_ratio}:1', 
-                           xy=(toe_x + slope_width/2, slope_height/2), fontsize=11, 
+                           xy=(toe_x + slope_width/2, toe_elevation + slope_height/2), fontsize=11, 
                            rotation=slope_angle, fontweight='bold', color='red')
         ax_preview.annotate(f'Crest = {crest_width:.1f} m',
-                           xy=(toe_x + slope_width + crest_width/2, slope_height + 0.5),
+                           xy=(toe_x + slope_width + crest_width/2, crest_elev + 0.5),
                            ha='center', fontsize=10)
+        ax_preview.annotate(f'Toe Elev = {toe_elevation:.1f} m',
+                           xy=(toe_x + 0.5, toe_elevation - 0.5),
+                           ha='left', fontsize=10, color='brown')
         
         ax_preview.set_xlim(toe_x - 8, toe_x + slope_width + crest_width + 8)
-        ax_preview.set_ylim(-3, slope_height + 3)
+        ax_preview.set_ylim(toe_elevation - 5, crest_elev + 3)
         ax_preview.set_xlabel('Distance (m)')
         ax_preview.set_ylabel('Elevation (m)')
         ax_preview.set_title('Embankment Geometry Preview')
