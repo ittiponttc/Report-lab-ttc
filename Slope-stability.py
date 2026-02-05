@@ -130,19 +130,34 @@ def get_slope_surface_y(x: float, slope_geometry: dict) -> float:
 def generate_slip_circle(slope_geometry: dict, x_offset: float = 0, y_offset: float = 0, r_factor: float = 1.0) -> SlipCircle:
     """
     สร้าง slip circle สำหรับการวิเคราะห์
+    Center ต้องอยู่ด้านหน้า slope (เหนือ toe) เสมอ
     """
     H = slope_geometry['height']
     slope_ratio = slope_geometry['slope_ratio']
     toe_x = slope_geometry['toe_x']
     toe_elevation = slope_geometry.get('toe_elevation', 0.0)
+    crest_width = slope_geometry.get('crest_width', 10.0)
     
-    # Default circle center above slope
     slope_width = H * slope_ratio
-    x_center = toe_x + slope_width / 2 + x_offset
-    y_center = toe_elevation + H * 1.2 + y_offset
+    crest_elevation = toe_elevation + H
     
-    # Radius to pass through toe
-    radius = np.sqrt((x_center - toe_x)**2 + (y_center - toe_elevation)**2) * r_factor
+    # Circle center should be in FRONT of slope (above/before toe)
+    # X position: between toe and slightly before middle of slope
+    x_center = toe_x + x_offset
+    
+    # Y position: above crest level
+    y_center = crest_elevation + H * 0.3 + y_offset
+    
+    # Radius calculation - circle should pass through toe area and crest area
+    # Distance from center to toe
+    dist_to_toe = np.sqrt((x_center - toe_x)**2 + (y_center - toe_elevation)**2)
+    
+    # Distance from center to crest
+    dist_to_crest = np.sqrt((x_center - (toe_x + slope_width))**2 + (y_center - crest_elevation)**2)
+    
+    # Use average distance as base radius
+    base_radius = (dist_to_toe + dist_to_crest) / 2
+    radius = base_radius * r_factor
     
     return SlipCircle(x_center, y_center, radius)
 
@@ -220,14 +235,23 @@ def slice_geometry(circle: SlipCircle, slope_geometry: dict, n_slices: int = 20)
     return slices
 
 def swedish_method(slices: List[dict], soil_layers: List[SoilLayer], 
-                   slope_geometry: dict, gwl: float, circle: SlipCircle) -> AnalysisResults:
+                   slope_geometry: dict, gwl: float, circle: SlipCircle,
+                   seismic_coef: float = 0.0) -> AnalysisResults:
     """
     วิเคราะห์ด้วยวิธี Swedish (Ordinary Method of Slices)
-    FS = Σ(c'·l + (W·cos(α) - u·l)·tan(φ')) / Σ(W·sin(α))
+    FS = Σ(c'·l + (W·cos(α) - u·l)·tan(φ')) / Σ(W·sin(α) + kh·W·arm/R)
+    
+    For seismic (pseudo-static):
+    - kh = horizontal seismic coefficient
+    - Seismic force = kh * W (acting horizontally)
+    - Additional driving moment = kh * W * (y_center - y_slice_center)
     """
     sum_resisting = 0
     sum_driving = 0
     slices_data = []
+    
+    R = circle.radius
+    y_center = circle.y_center
     
     for s in slices:
         x_mid = s['x_mid']
@@ -257,6 +281,14 @@ def swedish_method(slices: List[dict], soil_layers: List[SoilLayer],
         alpha = s['alpha']
         N = W * np.cos(alpha) - u * l
         T = W * np.sin(alpha)
+        
+        # Seismic force contribution (pseudo-static)
+        # Horizontal seismic force creates additional driving moment
+        if seismic_coef > 0:
+            # Moment arm for seismic force (horizontal distance from center)
+            arm = y_center - y_mid  # Vertical distance from center to slice
+            seismic_driving = seismic_coef * W * arm / R
+            T += seismic_driving
         
         # Shear strength
         c = soil.cohesion
@@ -293,8 +325,12 @@ def swedish_method(slices: List[dict], soil_layers: List[SoilLayer],
     else:
         fs = sum_resisting / abs(sum_driving)
     
+    method_name = "Swedish (Ordinary Method)"
+    if seismic_coef > 0:
+        method_name += f" + Seismic (kh={seismic_coef})"
+    
     return AnalysisResults(
-        method="Swedish (Ordinary Method)",
+        method=method_name,
         fs=fs,
         slices_data=slices_data,
         critical_circle=circle,
@@ -304,16 +340,23 @@ def swedish_method(slices: List[dict], soil_layers: List[SoilLayer],
 
 def bishop_simplified(slices: List[dict], soil_layers: List[SoilLayer],
                       slope_geometry: dict, gwl: float, circle: SlipCircle,
+                      seismic_coef: float = 0.0,
                       max_iter: int = 100, tol: float = 0.001) -> AnalysisResults:
     """
     วิเคราะห์ด้วยวิธี Bishop's Simplified Method
-    FS = Σ[(c'·b + (W - u·b)·tan(φ')) / m_α] / Σ(W·sin(α))
+    FS = Σ[(c'·b + (W - u·b)·tan(φ')) / m_α] / Σ(W·sin(α) + kh·W·arm/R)
     where m_α = cos(α) + sin(α)·tan(φ')/FS
+    
+    For seismic (pseudo-static):
+    - kh = horizontal seismic coefficient
+    - Additional driving moment from horizontal seismic force
     """
     # Initial FS guess
     fs = 1.5
     
     slices_data = []
+    R = circle.radius
+    y_center = circle.y_center
     
     for iteration in range(max_iter):
         sum_numerator = 0
@@ -356,6 +399,12 @@ def bishop_simplified(slices: List[dict], soil_layers: List[SoilLayer],
             numerator = (c * b + (W - u * b) * np.tan(phi_rad)) / m_alpha
             driving = W * np.sin(alpha)
             
+            # Seismic force contribution (pseudo-static)
+            if seismic_coef > 0:
+                arm = y_center - y_mid
+                seismic_driving = seismic_coef * W * arm / R
+                driving += seismic_driving
+            
             sum_numerator += numerator
             sum_driving += driving
             
@@ -384,8 +433,11 @@ def bishop_simplified(slices: List[dict], soil_layers: List[SoilLayer],
         # Check convergence
         if abs(fs_new - fs) < tol:
             slices_data = temp_slices_data
+            method_name = "Bishop's Simplified"
+            if seismic_coef > 0:
+                method_name += f" + Seismic (kh={seismic_coef})"
             return AnalysisResults(
-                method="Bishop's Simplified",
+                method=method_name,
                 fs=fs_new,
                 slices_data=slices_data,
                 critical_circle=circle,
@@ -396,8 +448,12 @@ def bishop_simplified(slices: List[dict], soil_layers: List[SoilLayer],
         fs = fs_new
         slices_data = temp_slices_data
     
+    method_name = "Bishop's Simplified"
+    if seismic_coef > 0:
+        method_name += f" + Seismic (kh={seismic_coef})"
+    
     return AnalysisResults(
-        method="Bishop's Simplified",
+        method=method_name,
         fs=fs,
         slices_data=slices_data,
         critical_circle=circle,
@@ -406,36 +462,56 @@ def bishop_simplified(slices: List[dict], soil_layers: List[SoilLayer],
     )
 
 def search_critical_circle(slope_geometry: dict, soil_layers: List[SoilLayer], 
-                           gwl: float, method: str, n_circles: int = 50) -> AnalysisResults:
+                           gwl: float, method: str, n_circles: int = 50,
+                           seismic_coef: float = 0.0) -> AnalysisResults:
     """
     ค้นหา critical slip circle ที่ให้ FS ต่ำสุด
+    Circle center ต้องอยู่ด้านหน้า slope (เหนือ toe) เสมอตามหลักทฤษฎี
+    
+    Parameters:
+    - seismic_coef: Horizontal seismic coefficient (kh) for pseudo-static analysis
     """
     H = slope_geometry['height']
     slope_ratio = slope_geometry['slope_ratio']
     toe_x = slope_geometry['toe_x']
     toe_elevation = slope_geometry.get('toe_elevation', 0.0)
+    crest_width = slope_geometry.get('crest_width', 10.0)
     slope_width = H * slope_ratio
+    crest_elevation = toe_elevation + H
     
     min_fs = float('inf')
     best_result = None
     
-    # Grid search for circle center
-    x_range = np.linspace(-H*0.5, H*1.5, int(np.sqrt(n_circles)))
-    y_range = np.linspace(H*0.5, H*2.5, int(np.sqrt(n_circles)))
-    r_factors = [0.8, 1.0, 1.2, 1.4, 1.6, 1.8]  # Extended range for deeper circles
+    # Grid search for circle center - CENTER MUST BE IN FRONT OF SLOPE
+    # X range: from before toe to middle of slope
+    x_range = np.linspace(toe_x - H*0.5, toe_x + slope_width * 0.3, int(np.sqrt(n_circles)))
+    # Y range: from crest level to well above crest
+    y_range = np.linspace(crest_elevation + H*0.2, crest_elevation + H*1.5, int(np.sqrt(n_circles)))
+    r_factors = [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5]
     
-    for x_off in x_range:
-        for y_off in y_range:
+    for x_c in x_range:
+        for y_c in y_range:
             for r_f in r_factors:
-                circle = generate_slip_circle(slope_geometry, x_off, y_off - H*1.2, r_f)
+                # Create circle directly with center position
+                # Calculate radius to pass through slope
+                dist_to_toe = np.sqrt((x_c - toe_x)**2 + (y_c - toe_elevation)**2)
+                dist_to_crest = np.sqrt((x_c - (toe_x + slope_width))**2 + (y_c - crest_elevation)**2)
+                base_radius = (dist_to_toe + dist_to_crest) / 2
+                radius = base_radius * r_f
                 
-                # Skip invalid circles - check if circle reaches below toe
-                if circle.radius < H * 0.5 or circle.radius > H * 5:
+                circle = SlipCircle(x_c, y_c, radius)
+                
+                # Validate circle
+                if radius < H * 0.5 or radius > H * 4:
                     continue
                 
-                # Make sure circle goes below toe elevation
-                circle_bottom = circle.y_center - circle.radius
-                if circle_bottom > toe_elevation:
+                # Circle bottom should reach below toe_elevation
+                circle_bottom = y_c - radius
+                if circle_bottom > toe_elevation - 0.5:
+                    continue
+                
+                # Center must be above toe_elevation
+                if y_c < toe_elevation + H * 0.5:
                     continue
                 
                 slices = slice_geometry(circle, slope_geometry, n_slices=15)
@@ -443,11 +519,11 @@ def search_critical_circle(slope_geometry: dict, soil_layers: List[SoilLayer],
                 if len(slices) < 5:
                     continue
                 
-                # Analyze
+                # Analyze with seismic if specified
                 if method == "Swedish":
-                    result = swedish_method(slices, soil_layers, slope_geometry, gwl, circle)
+                    result = swedish_method(slices, soil_layers, slope_geometry, gwl, circle, seismic_coef)
                 else:
-                    result = bishop_simplified(slices, soil_layers, slope_geometry, gwl, circle)
+                    result = bishop_simplified(slices, soil_layers, slope_geometry, gwl, circle, seismic_coef)
                 
                 if result.fs < min_fs and result.fs > 0.1:
                     min_fs = result.fs
@@ -459,9 +535,9 @@ def search_critical_circle(slope_geometry: dict, soil_layers: List[SoilLayer],
         slices = slice_geometry(circle, slope_geometry, n_slices=25)
         
         if method == "Swedish":
-            best_result = swedish_method(slices, soil_layers, slope_geometry, gwl, circle)
+            best_result = swedish_method(slices, soil_layers, slope_geometry, gwl, circle, seismic_coef)
         else:
-            best_result = bishop_simplified(slices, soil_layers, slope_geometry, gwl, circle)
+            best_result = bishop_simplified(slices, soil_layers, slope_geometry, gwl, circle, seismic_coef)
     
     return best_result
 
@@ -864,6 +940,174 @@ def load_from_json(json_str: str) -> Tuple[dict, List[SoilLayer], float, dict]:
     analysis_params = data.get('analysis_params', {})
     
     return slope_geometry, soil_layers, gwl, analysis_params
+
+# ============================================================
+# Word Report Export Function
+# ============================================================
+
+def generate_word_report(slope_geometry: dict, soil_layers: List[SoilLayer],
+                        gwl: float, result: AnalysisResults, 
+                        seismic_coef: float = 0.0,
+                        fig_slope: plt.Figure = None) -> bytes:
+    """
+    สร้างรายงาน Word สำหรับการวิเคราะห์เสถียรภาพลาดดิน
+    """
+    from docx import Document
+    from docx.shared import Inches, Pt, Cm
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.table import WD_TABLE_ALIGNMENT
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    import io
+    
+    doc = Document()
+    
+    # Set default font
+    style = doc.styles['Normal']
+    font = style.font
+    font.name = 'TH Sarabun New'
+    font.size = Pt(14)
+    
+    # Title
+    title = doc.add_heading('รายงานการวิเคราะห์เสถียรภาพลาดดิน', 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    doc.add_paragraph('Slope Stability Analysis Report', style='Heading 2').alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_paragraph()
+    
+    # Project Information
+    doc.add_heading('1. ข้อมูลโครงการ (Project Information)', level=1)
+    
+    info_table = doc.add_table(rows=6, cols=2)
+    info_table.style = 'Table Grid'
+    
+    info_data = [
+        ('Analysis Method', result.method if result else 'N/A'),
+        ('Embankment Height (m)', f"{slope_geometry['height']:.2f}"),
+        ('Slope Ratio (H:V)', f"{slope_geometry['slope_ratio']:.2f}:1"),
+        ('Toe Elevation (m)', f"{slope_geometry.get('toe_elevation', 0):.2f}"),
+        ('Ground Water Level (m)', f"{gwl:.2f}"),
+        ('Seismic Coefficient (kh)', f"{seismic_coef:.3f}" if seismic_coef > 0 else "Not Applied"),
+    ]
+    
+    for i, (label, value) in enumerate(info_data):
+        info_table.rows[i].cells[0].text = label
+        info_table.rows[i].cells[1].text = str(value)
+    
+    doc.add_paragraph()
+    
+    # Soil Properties
+    doc.add_heading('2. คุณสมบัติดิน (Soil Properties)', level=1)
+    
+    soil_table = doc.add_table(rows=len(soil_layers)+1, cols=7)
+    soil_table.style = 'Table Grid'
+    
+    # Header
+    headers = ['Layer', 'Thickness (m)', 'γ (kN/m³)', 'γsat (kN/m³)', 'c\' (kPa)', 'φ\' (°)', 'E (kPa)']
+    for j, header in enumerate(headers):
+        soil_table.rows[0].cells[j].text = header
+    
+    # Data
+    for i, layer in enumerate(soil_layers):
+        soil_table.rows[i+1].cells[0].text = layer.name
+        soil_table.rows[i+1].cells[1].text = f"{layer.thickness:.2f}"
+        soil_table.rows[i+1].cells[2].text = f"{layer.gamma:.1f}"
+        soil_table.rows[i+1].cells[3].text = f"{layer.gamma_sat:.1f}"
+        soil_table.rows[i+1].cells[4].text = f"{layer.cohesion:.1f}"
+        soil_table.rows[i+1].cells[5].text = f"{layer.phi:.1f}"
+        soil_table.rows[i+1].cells[6].text = f"{layer.E:.0f}"
+    
+    doc.add_paragraph()
+    
+    # Analysis Results
+    doc.add_heading('3. ผลการวิเคราะห์ (Analysis Results)', level=1)
+    
+    if result:
+        # Factor of Safety
+        fs = result.fs
+        status = 'SAFE (ปลอดภัย)' if fs >= 1.5 else 'MARGINAL (พอใช้)' if fs >= 1.0 else 'UNSAFE (ไม่ปลอดภัย)'
+        
+        result_para = doc.add_paragraph()
+        result_para.add_run(f'Factor of Safety (FS) = {fs:.3f}').bold = True
+        doc.add_paragraph(f'Status: {status}')
+        
+        if not result.converged:
+            doc.add_paragraph('Warning: Analysis did not converge!').italic = True
+        
+        doc.add_paragraph(f'Number of iterations: {result.iterations}')
+        
+        # Critical Circle
+        doc.add_paragraph()
+        doc.add_heading('Critical Slip Circle Parameters:', level=2)
+        circle = result.critical_circle
+        doc.add_paragraph(f'• Center X: {circle.x_center:.2f} m')
+        doc.add_paragraph(f'• Center Y: {circle.y_center:.2f} m')
+        doc.add_paragraph(f'• Radius: {circle.radius:.2f} m')
+        
+        # Slice Data Table
+        if result.slices_data:
+            doc.add_paragraph()
+            doc.add_heading('4. รายละเอียด Slice (Slice Details)', level=1)
+            
+            slice_table = doc.add_table(rows=min(len(result.slices_data)+1, 26), cols=6)
+            slice_table.style = 'Table Grid'
+            
+            slice_headers = ['Slice', 'Width (m)', 'Height (m)', 'W (kN)', 'α (°)', 'Soil']
+            for j, header in enumerate(slice_headers):
+                slice_table.rows[0].cells[j].text = header
+            
+            for i, s in enumerate(result.slices_data[:25]):  # Limit to 25 slices
+                slice_table.rows[i+1].cells[0].text = str(s['index'] + 1)
+                slice_table.rows[i+1].cells[1].text = f"{s['width']:.2f}"
+                slice_table.rows[i+1].cells[2].text = f"{s['height']:.2f}"
+                slice_table.rows[i+1].cells[3].text = f"{s['W']:.1f}"
+                slice_table.rows[i+1].cells[4].text = f"{s['alpha_deg']:.1f}"
+                slice_table.rows[i+1].cells[5].text = s['soil_name']
+    
+    # Add figure if provided
+    if fig_slope:
+        doc.add_paragraph()
+        doc.add_heading('5. แผนภาพการวิเคราะห์ (Analysis Diagram)', level=1)
+        
+        # Save figure to bytes
+        img_buffer = io.BytesIO()
+        fig_slope.savefig(img_buffer, format='png', dpi=150, bbox_inches='tight')
+        img_buffer.seek(0)
+        
+        doc.add_picture(img_buffer, width=Inches(6))
+    
+    # Conclusion
+    doc.add_paragraph()
+    doc.add_heading('6. สรุปผล (Conclusion)', level=1)
+    
+    if result:
+        if result.fs >= 1.5:
+            conclusion = f"""จากการวิเคราะห์เสถียรภาพลาดดินด้วยวิธี {result.method} 
+            พบว่าค่า Factor of Safety (FS) = {result.fs:.3f} ซึ่งมากกว่า 1.5 
+            ดังนั้นลาดดินมีความปลอดภัยเพียงพอตามมาตรฐานการออกแบบ"""
+        elif result.fs >= 1.0:
+            conclusion = f"""จากการวิเคราะห์เสถียรภาพลาดดินด้วยวิธี {result.method}
+            พบว่าค่า Factor of Safety (FS) = {result.fs:.3f} ซึ่งอยู่ระหว่าง 1.0-1.5
+            ลาดดินมีความเสถียรพอใช้ แต่ควรพิจารณาปรับปรุงหรือเพิ่มมาตรการเสริมความมั่นคง"""
+        else:
+            conclusion = f"""จากการวิเคราะห์เสถียรภาพลาดดินด้วยวิธี {result.method}
+            พบว่าค่า Factor of Safety (FS) = {result.fs:.3f} ซึ่งน้อยกว่า 1.0
+            ลาดดินไม่มีความปลอดภัย จำเป็นต้องปรับปรุงการออกแบบหรือเพิ่มมาตรการเสริมความมั่นคง"""
+        
+        doc.add_paragraph(conclusion)
+    
+    # Footer
+    doc.add_paragraph()
+    doc.add_paragraph('─' * 50)
+    doc.add_paragraph('Generated by Slope Stability Analysis Application')
+    doc.add_paragraph('Department of Civil Engineering, KMUTNB')
+    
+    # Save to bytes
+    doc_buffer = io.BytesIO()
+    doc.save(doc_buffer)
+    doc_buffer.seek(0)
+    
+    return doc_buffer.getvalue()
 
 # ============================================================
 # Streamlit Application
@@ -1274,10 +1518,46 @@ def main():
             show_slices = st.checkbox("Show Slice Division", value=True)
             
             st.markdown("---")
+            st.markdown("**🌍 Seismic Analysis (Pseudo-static)**")
+            
+            enable_seismic = st.checkbox("Enable Seismic Analysis", value=False,
+                                        help="เปิดใช้การวิเคราะห์แผ่นดินไหวแบบ Pseudo-static")
+            
+            if enable_seismic:
+                seismic_zone = st.selectbox(
+                    "Seismic Zone (Thailand)",
+                    ["Zone 0 (kh=0.00)", "Zone 1 (kh=0.05)", "Zone 2 (kh=0.10)", 
+                     "Zone 2A (kh=0.15)", "Zone 3 (kh=0.20)", "Custom"],
+                    help="เลือกเขตแผ่นดินไหวตามมาตรฐาน มยผ."
+                )
+                
+                if seismic_zone == "Custom":
+                    seismic_coef = st.number_input("Horizontal Seismic Coefficient (kh)",
+                                                   min_value=0.0, max_value=0.5,
+                                                   value=0.10, step=0.01,
+                                                   help="สัมประสิทธิ์แผ่นดินไหวแนวนอน")
+                else:
+                    # Extract kh from zone name
+                    kh_map = {"Zone 0 (kh=0.00)": 0.0, "Zone 1 (kh=0.05)": 0.05, 
+                              "Zone 2 (kh=0.10)": 0.10, "Zone 2A (kh=0.15)": 0.15,
+                              "Zone 3 (kh=0.20)": 0.20}
+                    seismic_coef = kh_map.get(seismic_zone, 0.10)
+                    st.info(f"kh = {seismic_coef}")
+            else:
+                seismic_coef = 0.0
+            
+            st.session_state.seismic_coef = seismic_coef
+            
+            st.markdown("---")
             st.markdown("**Factor of Safety Criteria:**")
             st.write("• FS ≥ 1.50: ✅ Safe")
             st.write("• 1.00 ≤ FS < 1.50: ⚠️ Marginal")
             st.write("• FS < 1.00: ❌ Unsafe")
+            
+            if enable_seismic:
+                st.markdown("**Seismic FS Criteria:**")
+                st.write("• FS ≥ 1.10: ✅ Acceptable")
+                st.write("• FS < 1.10: ❌ Needs improvement")
             
             run_analysis = st.button("🔄 Run Stability Analysis", type="primary", use_container_width=True)
         
@@ -1293,11 +1573,11 @@ def main():
                             # Run both analyses
                             result_bishop = search_critical_circle(
                                 slope_geometry, st.session_state.soil_layers,
-                                gwl, "Bishop", n_search
+                                gwl, "Bishop", n_search, seismic_coef
                             )
                             result_swedish = search_critical_circle(
                                 slope_geometry, st.session_state.soil_layers,
-                                gwl, "Swedish", n_search
+                                gwl, "Swedish", n_search, seismic_coef
                             )
                             
                             # Display comparison
@@ -1337,7 +1617,7 @@ def main():
                             method = "Bishop" if "Bishop" in analysis_method else "Swedish"
                             result = search_critical_circle(
                                 slope_geometry, st.session_state.soil_layers,
-                                gwl, method, n_search
+                                gwl, method, n_search, seismic_coef
                             )
                             st.session_state.analysis_result = result
                             
@@ -1399,6 +1679,70 @@ def main():
                 st.write(f"• Center X: **{circle.x_center:.2f} m**")
                 st.write(f"• Center Y: **{circle.y_center:.2f} m**")
                 st.write(f"• Radius: **{circle.radius:.2f} m**")
+            
+            # Export to Word
+            st.markdown("---")
+            st.markdown("### 📄 Export Report")
+            
+            col_exp1, col_exp2 = st.columns(2)
+            
+            with col_exp1:
+                try:
+                    # Generate figure for report
+                    fig_for_report = plot_slope_and_circle(
+                        slope_geometry, 
+                        st.session_state.soil_layers,
+                        gwl, 
+                        result,
+                        True
+                    )
+                    
+                    seismic_coef = st.session_state.get('seismic_coef', 0.0)
+                    
+                    word_bytes = generate_word_report(
+                        slope_geometry,
+                        st.session_state.soil_layers,
+                        gwl,
+                        result,
+                        seismic_coef,
+                        fig_for_report
+                    )
+                    plt.close(fig_for_report)
+                    
+                    st.download_button(
+                        label="📥 Download Word Report (.docx)",
+                        data=word_bytes,
+                        file_name="slope_stability_report.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        use_container_width=True
+                    )
+                except ImportError:
+                    st.warning("python-docx library not installed. Install with: pip install python-docx")
+                except Exception as e:
+                    st.error(f"Error generating report: {str(e)}")
+            
+            with col_exp2:
+                # Save figure as PNG
+                fig_png = plot_slope_and_circle(
+                    slope_geometry, 
+                    st.session_state.soil_layers,
+                    gwl, 
+                    result,
+                    True
+                )
+                
+                buf = BytesIO()
+                fig_png.savefig(buf, format='png', dpi=200, bbox_inches='tight')
+                buf.seek(0)
+                plt.close(fig_png)
+                
+                st.download_button(
+                    label="📥 Download Figure (.png)",
+                    data=buf.getvalue(),
+                    file_name="slope_stability_figure.png",
+                    mime="image/png",
+                    use_container_width=True
+                )
     
     # ============================================================
     # Tab 4: Settlement Analysis
