@@ -1512,8 +1512,52 @@ def main():
                 help="เลือกวิธีการวิเคราะห์"
             )
             
-            n_search = st.slider("Search Grid Density", 20, 100, 50,
-                                help="จำนวน circle ในการค้นหา critical surface")
+            st.markdown("---")
+            st.markdown("**🎯 Slip Circle Definition**")
+            
+            circle_mode = st.radio(
+                "Circle Mode",
+                ["Auto Search (Critical)", "Manual Input"],
+                help="เลือกวิธีกำหนด slip circle"
+            )
+            
+            if circle_mode == "Auto Search (Critical)":
+                n_search = st.slider("Search Grid Density", 20, 100, 50,
+                                    help="จำนวน circle ในการค้นหา critical surface")
+                n_slices = st.slider("Number of Slices", 7, 30, 20,
+                                    help="จำนวน slice ในการวิเคราะห์")
+                manual_circle = None
+            else:
+                st.markdown("**กำหนด Circle Center และ Radius:**")
+                
+                # Get default values based on slope geometry
+                slope_geo = st.session_state.get('slope_geometry', {})
+                H = slope_geo.get('height', 10.0)
+                toe_x = slope_geo.get('toe_x', 5.0)
+                toe_elev = slope_geo.get('toe_elevation', 0.0)
+                
+                col_c1, col_c2 = st.columns(2)
+                with col_c1:
+                    center_x = st.number_input("Center X (m)", 
+                                               min_value=-50.0, max_value=50.0,
+                                               value=float(toe_x - H*0.5), step=1.0,
+                                               help="ตำแหน่ง X ของจุดศูนย์กลาง")
+                    center_y = st.number_input("Center Y (m)", 
+                                               min_value=-10.0, max_value=100.0,
+                                               value=float(toe_elev + H*1.5), step=1.0,
+                                               help="ตำแหน่ง Y ของจุดศูนย์กลาง")
+                with col_c2:
+                    radius = st.number_input("Radius (m)", 
+                                             min_value=1.0, max_value=100.0,
+                                             value=float(H*1.8), step=1.0,
+                                             help="รัศมีของ slip circle")
+                    n_slices = st.slider("Number of Slices", 5, 30, 10,
+                                        help="จำนวน slice (ตามตำราใช้ 7-10)")
+                
+                manual_circle = SlipCircle(center_x, center_y, radius)
+                n_search = 50  # Not used in manual mode
+                
+                st.info(f"📍 Center: ({center_x:.1f}, {center_y:.1f}), R = {radius:.1f} m")
             
             show_slices = st.checkbox("Show Slice Division", value=True)
             
@@ -1547,6 +1591,7 @@ def main():
                 seismic_coef = 0.0
             
             st.session_state.seismic_coef = seismic_coef
+            st.session_state.n_slices = n_slices
             
             st.markdown("---")
             st.markdown("**Factor of Safety Criteria:**")
@@ -1567,10 +1612,71 @@ def main():
                 gwl = st.session_state.get('gwl', 2.0)
                 
                 if slope_geometry and st.session_state.soil_layers:
-                    with st.spinner("Searching for critical slip circle..."):
+                    with st.spinner("Analyzing slip circle..."):
                         
-                        if analysis_method == "Both Methods":
-                            # Run both analyses
+                        if circle_mode == "Manual Input" and manual_circle:
+                            # Manual circle analysis
+                            st.markdown("### 🎯 Manual Circle Analysis")
+                            
+                            slices = slice_geometry(manual_circle, slope_geometry, n_slices=n_slices)
+                            
+                            if len(slices) < 3:
+                                st.error("Circle ไม่ตัดผ่านลาดดินอย่างเหมาะสม กรุณาปรับ Center หรือ Radius")
+                            else:
+                                if analysis_method == "Both Methods":
+                                    result_swedish = swedish_method(slices, st.session_state.soil_layers, 
+                                                                   slope_geometry, gwl, manual_circle, seismic_coef)
+                                    result_bishop = bishop_simplified(slices, st.session_state.soil_layers, 
+                                                                     slope_geometry, gwl, manual_circle, seismic_coef)
+                                    
+                                    col_b, col_s = st.columns(2)
+                                    with col_b:
+                                        fs_b = result_bishop.fs
+                                        status = 'safe' if fs_b >= 1.5 else 'warning' if fs_b >= 1.0 else 'danger'
+                                        st.markdown(f"""
+                                        <div class="result-{status}">
+                                            <h3>Bishop's Simplified</h3>
+                                            <h1>FS = {fs_b:.3f}</h1>
+                                            <p>Slices: {len(slices)} | Iter: {result_bishop.iterations}</p>
+                                        </div>
+                                        """, unsafe_allow_html=True)
+                                    with col_s:
+                                        fs_s = result_swedish.fs
+                                        status = 'safe' if fs_s >= 1.5 else 'warning' if fs_s >= 1.0 else 'danger'
+                                        st.markdown(f"""
+                                        <div class="result-{status}">
+                                            <h3>Swedish Method</h3>
+                                            <h1>FS = {fs_s:.3f}</h1>
+                                            <p>Slices: {len(slices)}</p>
+                                        </div>
+                                        """, unsafe_allow_html=True)
+                                    
+                                    result = result_bishop
+                                else:
+                                    if "Bishop" in analysis_method:
+                                        result = bishop_simplified(slices, st.session_state.soil_layers, 
+                                                                  slope_geometry, gwl, manual_circle, seismic_coef)
+                                    else:
+                                        result = swedish_method(slices, st.session_state.soil_layers, 
+                                                               slope_geometry, gwl, manual_circle, seismic_coef)
+                                    
+                                    fs = result.fs
+                                    status = 'safe' if fs >= 1.5 else 'warning' if fs >= 1.0 else 'danger'
+                                    status_text = 'SAFE' if fs >= 1.5 else 'MARGINAL' if fs >= 1.0 else 'UNSAFE'
+                                    
+                                    st.markdown(f"""
+                                    <div class="result-{status}">
+                                        <h2>{result.method}</h2>
+                                        <h1 style="font-size:3rem;">FS = {fs:.3f}</h1>
+                                        <h3>{status_text}</h3>
+                                        <p>Number of Slices: {len(slices)}</p>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                
+                                st.session_state.analysis_result = result
+                        
+                        elif analysis_method == "Both Methods":
+                            # Auto search - Both methods
                             result_bishop = search_critical_circle(
                                 slope_geometry, st.session_state.soil_layers,
                                 gwl, "Bishop", n_search, seismic_coef
@@ -1581,7 +1687,7 @@ def main():
                             )
                             
                             # Display comparison
-                            st.markdown("### 📈 Results Comparison")
+                            st.markdown("### 📈 Results Comparison (Critical Circle)")
                             
                             col_b, col_s = st.columns(2)
                             
@@ -1614,6 +1720,7 @@ def main():
                             st.session_state.analysis_result = result
                             
                         else:
+                            # Auto search - Single method
                             method = "Bishop" if "Bishop" in analysis_method else "Swedish"
                             result = search_critical_circle(
                                 slope_geometry, st.session_state.soil_layers,
@@ -1631,6 +1738,7 @@ def main():
                                     <h2>{result.method}</h2>
                                     <h1 style="font-size:3rem;">FS = {fs:.3f}</h1>
                                     <h3>{status_text}</h3>
+                                    <p>Critical Circle (Auto Search)</p>
                                 </div>
                                 """, unsafe_allow_html=True)
                 else:
