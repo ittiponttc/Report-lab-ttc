@@ -807,9 +807,33 @@ def load_from_json(json_str: str) -> Tuple[dict, List[SoilLayer], float, dict]:
     """โหลดข้อมูลจาก JSON"""
     data = json.loads(json_str)
     
-    slope_geometry = data['slope_geometry']
-    soil_layers = [SoilLayer(**layer) for layer in data['soil_layers']]
-    gwl = data['gwl']
+    # Convert slope geometry values to float
+    slope_geometry = {
+        'height': float(data['slope_geometry']['height']),
+        'slope_ratio': float(data['slope_geometry']['slope_ratio']),
+        'crest_width': float(data['slope_geometry']['crest_width']),
+        'toe_x': float(data['slope_geometry']['toe_x'])
+    }
+    
+    # Convert soil layer values to float
+    soil_layers = []
+    for layer in data['soil_layers']:
+        soil_layers.append(SoilLayer(
+            name=layer['name'],
+            thickness=float(layer['thickness']),
+            gamma=float(layer['gamma']),
+            gamma_sat=float(layer['gamma_sat']),
+            cohesion=float(layer['cohesion']),
+            phi=float(layer['phi']),
+            E=float(layer['E']),
+            Cc=float(layer['Cc']),
+            Cr=float(layer['Cr']),
+            e0=float(layer['e0']),
+            OCR=float(layer['OCR']),
+            Cv=float(layer['Cv'])
+        ))
+    
+    gwl = float(data['gwl'])
     analysis_params = data.get('analysis_params', {})
     
     return slope_geometry, soil_layers, gwl, analysis_params
@@ -959,10 +983,10 @@ def main():
             st.markdown("**Embankment Dimensions**")
             
             # Check for loaded values
-            default_height = st.session_state.get('loaded_slope', {}).get('height', 8.0)
-            default_ratio = st.session_state.get('loaded_slope', {}).get('slope_ratio', 1.5)
-            default_crest = st.session_state.get('loaded_slope', {}).get('crest_width', 10.0)
-            default_toe = st.session_state.get('loaded_slope', {}).get('toe_x', 5.0)
+            default_height = float(st.session_state.get('loaded_slope', {}).get('height', 8.0))
+            default_ratio = float(st.session_state.get('loaded_slope', {}).get('slope_ratio', 1.5))
+            default_crest = float(st.session_state.get('loaded_slope', {}).get('crest_width', 10.0))
+            default_toe = float(st.session_state.get('loaded_slope', {}).get('toe_x', 5.0))
             
             slope_height = st.number_input("Embankment Height (m)", 
                                            min_value=1.0, max_value=50.0, 
@@ -1092,53 +1116,53 @@ def main():
                                         key=f"name_{i}")
                     thickness = st.number_input(f"Thickness (m)##{i}", 
                                                min_value=0.5, max_value=30.0,
-                                               value=st.session_state.soil_layers[i].thickness,
+                                               value=float(st.session_state.soil_layers[i].thickness),
                                                step=0.5, key=f"thick_{i}")
                     gamma = st.number_input(f"Unit Weight γ (kN/m³)##{i}", 
                                            min_value=10.0, max_value=25.0,
-                                           value=st.session_state.soil_layers[i].gamma,
+                                           value=float(st.session_state.soil_layers[i].gamma),
                                            step=0.5, key=f"gamma_{i}")
                     gamma_sat = st.number_input(f"Saturated Unit Weight γ_sat (kN/m³)##{i}", 
                                                min_value=15.0, max_value=28.0,
-                                               value=st.session_state.soil_layers[i].gamma_sat,
+                                               value=float(st.session_state.soil_layers[i].gamma_sat),
                                                step=0.5, key=f"gamma_sat_{i}")
                 
                 with col2:
                     st.markdown("**Strength Parameters**")
                     cohesion = st.number_input(f"Cohesion c' (kPa)##{i}", 
                                               min_value=0.0, max_value=200.0,
-                                              value=st.session_state.soil_layers[i].cohesion,
+                                              value=float(st.session_state.soil_layers[i].cohesion),
                                               step=1.0, key=f"c_{i}")
                     phi = st.number_input(f"Friction Angle φ' (°)##{i}", 
                                          min_value=0.0, max_value=45.0,
-                                         value=st.session_state.soil_layers[i].phi,
+                                         value=float(st.session_state.soil_layers[i].phi),
                                          step=1.0, key=f"phi_{i}")
                     E = st.number_input(f"Young's Modulus E (kPa)##{i}", 
                                        min_value=1000.0, max_value=500000.0,
-                                       value=st.session_state.soil_layers[i].E,
+                                       value=float(st.session_state.soil_layers[i].E),
                                        step=1000.0, key=f"E_{i}")
                 
                 with col3:
                     st.markdown("**Consolidation Parameters**")
                     Cc = st.number_input(f"Compression Index Cc##{i}", 
                                         min_value=0.05, max_value=2.0,
-                                        value=st.session_state.soil_layers[i].Cc,
+                                        value=float(st.session_state.soil_layers[i].Cc),
                                         step=0.05, key=f"Cc_{i}")
                     Cr = st.number_input(f"Recompression Index Cr##{i}", 
                                         min_value=0.01, max_value=0.5,
-                                        value=st.session_state.soil_layers[i].Cr,
+                                        value=float(st.session_state.soil_layers[i].Cr),
                                         step=0.01, key=f"Cr_{i}")
                     e0 = st.number_input(f"Initial Void Ratio e₀##{i}", 
                                         min_value=0.3, max_value=3.0,
-                                        value=st.session_state.soil_layers[i].e0,
+                                        value=float(st.session_state.soil_layers[i].e0),
                                         step=0.05, key=f"e0_{i}")
                     OCR = st.number_input(f"OCR##{i}", 
                                          min_value=1.0, max_value=10.0,
-                                         value=st.session_state.soil_layers[i].OCR,
+                                         value=float(st.session_state.soil_layers[i].OCR),
                                          step=0.5, key=f"OCR_{i}")
                     Cv = st.number_input(f"Cv (m²/year)##{i}", 
                                         min_value=0.1, max_value=50.0,
-                                        value=st.session_state.soil_layers[i].Cv,
+                                        value=float(st.session_state.soil_layers[i].Cv),
                                         step=0.5, key=f"Cv_{i}")
                 
                 # Update layer
@@ -1350,7 +1374,7 @@ def main():
             # Applied stress
             q_applied = st.number_input("Applied Stress q (kPa)",
                                         min_value=10.0, max_value=500.0,
-                                        value=st.session_state.get('surcharge', 50.0),
+                                        value=float(st.session_state.get('surcharge', 50.0)),
                                         step=10.0,
                                         help="น้ำหนักบรรทุกที่กระทำ")
             
